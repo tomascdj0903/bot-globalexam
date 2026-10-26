@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.10.26.1"
+BOT_VERSION = "2026.10.26.2"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -7388,9 +7388,11 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                 s = s.replace(apos, "'")
             # Normaliser espaces
             s = re.sub(r"\s+", " ", s)
-            # Retire ponctuation finale (matche 'later' avec 'later,')
-            while s and s[-1] in ",.!?;:":
-                s = s[:-1]
+            # Retire ponctuation finale (matche 'later' avec 'later,') —
+            # SAUF pour une tuile de ponctuation seule (« , » ≠ « . » ≠ « ! »)
+            if any(ch.isalnum() for ch in s):
+                while s and s[-1] in ",.!?;:":
+                    s = s[:-1]
             return s.strip()
 
         target_key = _norm_apos_key(target)
@@ -7530,7 +7532,8 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
             exact_cands = self.driver.execute_script("""
                 const norm = s => (s || '').toLowerCase()
                     .replace(/[\u2019\u2018\u02BC`\u00B4]/g, "'")
-                    .replace(/\\s+/g, ' ').trim().replace(/[,.!?;:]+$/, '').trim();
+                    .replace(/\\s+/g, ' ').trim()
+                    .replace(/([\\p{L}\\p{N}])[,.!?;:]+$/u, '$1').trim();
                 const want = arguments[0];
                 const out = [];
                 for (const el of document.querySelectorAll(
@@ -7785,9 +7788,12 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
             s = re.sub(r"\s+", " ", s)
             # Retire la ponctuation finale pour matcher 'later' avec
             # 'later,' (le stock utilise des mots-tokens avec
-            # ponctuation incluse, l'IA retourne souvent sans)
-            while s and s[-1] in ",.!?;:":
-                s = s[:-1]
+            # ponctuation incluse, l'IA retourne souvent sans) — SAUF
+            # tuile de ponctuation seule : « , » ≠ « . » ≠ « ! » (bug :
+            # le « , » cliquait le « ! »)
+            if any(ch.isalnum() for ch in s):
+                while s and s[-1] in ",.!?;:":
+                    s = s[:-1]
             return s.strip()
 
         target_key = _norm(target)
