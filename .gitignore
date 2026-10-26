@@ -1,0 +1,11 @@
+# Fichiers PRIVÉS / locaux — jamais publiés
+cle_fournie.py
+notification_iphone.txt
+journaux/
+erreurs/
+diagnostics/
+maj/
+build/
+dist/
+__pycache__/
+*_precedent.py

@@ -1,0 +1,13 @@
+# Dépendances du Bot GlobalExam
+# Installer sur la machine de BUILD (Windows) avec :
+#     pip install -r requirements.txt
+
+# --- Exécution (le bot) ---
+selenium
+Pillow
+google-generativeai
+wordfreq
+pyspellchecker
+
+# --- Build (génération du .exe) ---
+pyinstaller
