@@ -629,7 +629,9 @@ def load_bot_module(log):
             if f'BOT_VERSION = "{remote}"' not in src:
                 raise ValueError("version incohérente")
             upd.parent.mkdir(parents=True, exist_ok=True)
-            upd.write_text(src, encoding="utf-8")
+            # Octets bruts, fins de ligne « \n » : write_text sous Windows
+            # transformait « \r\n » en « \r\r\n » → fichier illisible.
+            upd.write_bytes(src.replace("\r\n", "\n").encode("utf-8"))
             log(f"⬇️ Mise à jour du bot téléchargée : v{remote}")
         except Exception as e:  # noqa: BLE001
             log(f"⚠️ Mise à jour non téléchargée : {str(e)[:60]}")
@@ -641,6 +643,10 @@ def load_bot_module(log):
             return mod
         except Exception as e:  # noqa: BLE001
             sys.modules["bot"] = bundled
+            try:
+                upd.unlink()            # sera re-téléchargée au prochain lancement
+            except OSError:
+                pass
             log(f"⚠️ Mise à jour illisible ({str(e)[:60]}) → version de "
                 f"l'exe v{best_ver}")
     else:
