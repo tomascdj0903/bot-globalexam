@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.10.27.1"
+BOT_VERSION = "2026.10.27.2"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -343,7 +343,10 @@ class _RestGemini:
             data = json.loads(urllib.request.urlopen(
                 req, timeout=timeout).read().decode("utf-8"))
         except urllib.error.HTTPError as he:
-            raise RuntimeError(f"{he.code} {he.read().decode('utf-8', 'ignore')[:300]}")
+            # Corps COMPLET : le marqueur « PerDay » (quota du jour) est
+            # loin dans les détails ; coupé à 300 car. il était perdu et
+            # le bot attendait 3×60 s pour rien.
+            raise RuntimeError(f"{he.code} {he.read().decode('utf-8', 'ignore')[:4000]}")
         text = ""
         for cand in data.get("candidates") or []:
             for prt in (cand.get("content") or {}).get("parts") or []:
@@ -4534,8 +4537,15 @@ class HybridBot:
         # Marqueur VISIBLE dans les logs : dès qu'on utilise un modèle
         # différent de Flash (vérifications, arbitrage…), on l'affiche en
         # clair entre crochets → facile à repérer/grep dans les logs.
+        _exh = self.__dict__.setdefault("_aux_exhausted", {})
         if model_name and model_name != MODEL_NAME:
-            print(f"   🪶 ↪ modèle léger utilisé : [{active_label}]")
+            if _exh.get(model_name) == time.strftime("%Y-%m-%d"):
+                # Quota du jour déjà épuisé sur ce modèle → principal direct
+                model_name = None
+                active_label = MODEL_NAME
+            else:
+                print(f"   🪶 ↪ modèle léger utilisé : [{active_label}]")
+        _aux_429 = 0
 
         for attempt in range(max_retries):
             now = time.time()
@@ -4670,12 +4680,18 @@ class HybridBot:
                     # libère. On marque 4 timestamps pour forcer
                     # l'attente au prochain tour.
                     self._call_timestamps = [time.time()] * RPM_PER_KEY
-                    if (("perday" in err.replace(" ", "") or "per day" in err)
-                            and model_name and model_name != MODEL_NAME):
+                    _perday = ("perday" in err.replace(" ", "")
+                               or "per day" in err)
+                    if model_name and model_name != MODEL_NAME:
+                        _aux_429 += 1
+                        if _perday:
+                            _exh[model_name] = time.strftime("%Y-%m-%d")
+                    if (model_name and model_name != MODEL_NAME
+                            and (_perday or _aux_429 >= 2)):
                         # Quota épuisé sur un modèle d'appoint (ex. Flash
                         # pour les images) → on retombe sur le principal
-                        print(f"   🔁 Quota du jour épuisé sur {active_label} "
-                              f"→ repli sur {MODEL_NAME}")
+                        print(f"   🔁 Quota {'du jour épuisé' if _perday else 'saturé'} "
+                              f"sur {active_label} → repli sur {MODEL_NAME}")
                         model_name = None
                         active_label = MODEL_NAME
                         self._call_timestamps = []
