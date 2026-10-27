@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.10.26.3"
+BOT_VERSION = "2026.10.27.1"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -7047,6 +7047,27 @@ transcript→{{"type":"transcript","transcript_action":true}}"""
         exercise_type = result.get("type", "")
         actions_a = result["actions"]
 
+        # ── CONSIGNE « ORDRE CHRONOLOGIQUE » ───────────────────────────
+        # « Organize the information in chronological order » : UNE seule
+        # zone mais TOUTES les répliques à y déposer, dans l'ordre. Bug
+        # observé (×3) : l'IA répondait « navigation / Skip » → forcé en
+        # QCM → une seule réplique déposée → « Almost! ».
+        if (not is_radio_qcm and len(code_options or []) >= 2
+                and exercise_type in ("qcm", "navigation", "drag_drop",
+                                      "", "transcript")
+                and self._is_chrono_instruction(page_text)):
+            print(f"   🔧 Consigne « ordre chronologique » → type "
+                  f"'{exercise_type or '?'}' remplacé par "
+                  f"reorder_chronological ({len(code_options)} répliques)")
+            exercise_type = "reorder_chronological"
+            result["type"] = exercise_type
+            _stock_keys = {norm_key(o): o for o in code_options}
+            _kept = [a for a in actions_a if norm_key(a) in _stock_keys]
+            _kept += [o for o in code_options
+                      if norm_key(o) not in {norm_key(k) for k in _kept}]
+            actions_a = _kept
+            result["actions"] = actions_a
+
         # ── OVERRIDE QCM-RADIO ─────────────────────────────────────────
         # Si le DOM indique N radio-labels ≈ N options, c'est un QCM.
         # On force le type même si Gemini a proposé "reorder_sentence"
@@ -8204,7 +8225,22 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
             if (cs.visibility === 'hidden' || cs.display === 'none'
                 || parseFloat(cs.opacity) === 0) continue;
             const clean = t.replace(/^[\s¡!¿?«"'\u{1F300}-\u{1FAFF}☀-➿]+/u, '');
-            if (!bad && BAD.test(clean)) bad = t;
+            // Phrase DE L'EXERCICE qui commence par « Oops! … » (ex.
+            // « Oops! Dinner isn't cooked. I ___ ») : le texte continue
+            // après le mot ET il est collé à la zone de réponse → ce
+            // n'est pas le feedback du site.
+            const isExoSentence = () => {
+                const rest = clean.replace(BAD, '').replace(/^[\s!.,:;]+/, '');
+                if (!rest || /^(you |that|this |the correct|it's not|not )/i.test(rest))
+                    return false;
+                for (let h = el, k = 0; h && k < 3; h = h.parentElement, k++)
+                    if (h.querySelector('[data-name="user-answer-container"],'
+                        + '.ordering-drop-zone,.dropzone,input,textarea,'
+                        + '[data-draggable-item-id],[data-sortable-item]'))
+                        return true;
+                return false;
+            };
+            if (!bad && BAD.test(clean) && !isExoSentence()) bad = t;
             else if (!good && GOOD.test(clean)) good = t;
             const cls = (el.className && el.className.toString) ?
                         el.className.toString() : '';
@@ -8466,6 +8502,23 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         if getattr(self, "_p1_lite", False) or self.lesson_texts:
             return MODEL_NAME
         return MODEL_ARBITRAGE
+
+    _CHRONO_RX = re.compile(
+        r"chronolog|in the (?:right|correct) order|put .{0,30}in order"
+        r"|ordre chronologique|dans le bon ordre|orden cronol"
+        r"|en el orden correcto|chronologisch|richtigen reihenfolge"
+        r"|ordine cronologico|ordem cronol", re.I)
+
+    def _is_chrono_instruction(self, page_text: str = "") -> bool:
+        """La consigne demande-t-elle de remettre des répliques dans
+        l'ordre (« Organize the information in chronological order ») ?"""
+        txt = page_text or ""
+        if not txt:
+            try:
+                txt = self._get_page_text()[:3000]
+            except Exception:  # noqa: BLE001
+                txt = ""
+        return bool(self._CHRONO_RX.search(txt))
 
     def _id_order(self, plan: list, stock: list | None = None) -> list | None:
         """Les tuiles à remettre dans l'ordre portent un identifiant
@@ -10761,6 +10814,126 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                 continue
         return None
 
+    # Recherche de la flèche du carrousel EN UN SEUL appel JS (avant :
+    # 5 à 8 allers-retours Selenium PAR icône de la page, à chaque diapo
+    # → ~7 s par diapo et l'Auto-Refresh tombait au milieu).
+    # Renvoie {el, disabled, kind, sig, tr} : kind = 'carousel' (flèche
+    # de carrousel classique) ou 'stock' (chevron iconify global-exam) ;
+    # sig = texte de la page (signature de la diapo) ; tr = présence
+    # d'un bouton transcript.
+    JS_CAROUSEL_ARROW = r"""
+        const vis = e => { if (!e) return false;
+            const r = e.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0) return false;
+            const st = getComputedStyle(e);
+            return st.visibility !== 'hidden' && st.display !== 'none'; };
+        const txt = e => ((e.innerText !== undefined ? e.innerText
+                                                     : '') || '').trim();
+        const cls = e => { const c = e.className;
+            return String(c && c.baseVal !== undefined ? c.baseVal
+                                                       : (c || '')); };
+        const isDis = a => { const b = a.closest('button, [role=button], a') || a;
+            const st = getComputedStyle(b);
+            return !!(b.disabled || b.getAttribute('aria-disabled') === 'true'
+                      || parseFloat(st.opacity) < 0.45
+                      || st.pointerEvents === 'none'); };
+        const X = e => e.getBoundingClientRect().left;
+        let el = null, kind = null;
+        for (const q of ["svg[data-icon='chevron-right']", 'button.slick-next',
+                         'div.swiper-button-next', "button[aria-label='Next slide']",
+                         '.carousel-control-next']) {
+            const v = [...document.querySelectorAll(q)]
+                .filter(a => vis(a) && !txt(a));
+            if (v.length) { v.sort((a, b) => X(a) - X(b));
+                            el = v[v.length - 1]; kind = 'carousel'; break; }
+        }
+        if (!el) {
+            const NAV = ['next','suivant','continue','continuer','finish',
+                'terminer','submit','valider','validate','skip','passer',
+                'check','vérifier','siguiente','terminar','enviar','saltar',
+                'verificar','weiter','beenden','absenden','avanti','fine',
+                'invia','próximo','pular'];
+            const BADC = ['button-solid-primary','btn-primary','btn-next',
+                'btn-submit','btn-validate','btn-finish','submit-button',
+                'validate-button','next-button'];
+            const chevron = d => {
+                d = (d || '').trim();
+                if (!d || (d.match(/[Mm]/g) || []).length > 1 || d.length > 180)
+                    return false;
+                const m = d.match(/^M\s*([\d.]+)/);
+                if (!m) return false;
+                const x0 = parseFloat(m[1]);
+                if (!(x0 >= 2 && x0 <= 14)) return false;
+                return (d.split('L12 ').length - 1)
+                       + (d.split('L12.').length - 1) < 2;
+            };
+            const anc = e => { let c = e;
+                for (let i = 0; i < 6; i++) { c = c.parentElement;
+                    if (!c) return null;
+                    const t = c.tagName.toLowerCase();
+                    if (t === 'button' || t === 'a'
+                        || c.getAttribute('role') === 'button'
+                        || cls(c).includes('cursor-pointer')) return c; }
+                return null; };
+            const cands = [];
+            for (const svg of document.querySelectorAll('svg.iconify--global-exam')) {
+                if (!vis(svg)) continue;
+                const p = svg.querySelector('path');
+                if (!chevron(p ? p.getAttribute('d') : '')) continue;
+                const c = anc(svg);
+                if (!c) continue;
+                if (c.hasAttribute('disabled')) continue;
+                const ad = (c.getAttribute('aria-disabled') || '').toLowerCase();
+                if (ad === 'true' || ad === '1') continue;
+                const pt = txt(c);
+                if (pt && (pt.length > 1 || !/^\d$/.test(pt))) continue;
+                const al = (c.getAttribute('aria-label') || '').toLowerCase();
+                if (al && NAV.some(k => al.includes(k))) continue;
+                const ti = (c.getAttribute('title') || '').toLowerCase();
+                if (ti && NAV.some(k => ti.includes(k))) continue;
+                const bc = cls(c).toLowerCase();
+                if (BADC.some(k => bc.includes(k))) continue;
+                cands.push(c);
+            }
+            if (cands.length) { cands.sort((a, b) => X(b) - X(a));
+                                el = cands[0]; kind = 'stock'; }
+        }
+        const body = document.body ? (document.body.innerText || '') : '';
+        const tr = !!document.querySelector("[data-testid='transcript-toggle']")
+                   || /transcri|trascri|transkri/i.test(body);
+        return {el: el, disabled: el ? isDis(el) : false, kind: kind,
+                sig: body.replace(/\d{1,2}:\d{2}/g, '').slice(0, 1500),
+                tr: tr};
+    """
+
+    def _carousel_probe(self) -> dict:
+        """Un seul appel JS : flèche + état grisé + signature de diapo."""
+        try:
+            r = self.driver.execute_script(self.JS_CAROUSEL_ARROW)
+            if isinstance(r, dict):
+                return r
+        except WebDriverException:
+            pass
+        return {"el": None, "disabled": False, "kind": None,
+                "sig": "", "tr": False}
+
+    def _carousel_should_run(self) -> bool:
+        """Faut-il lancer le carrousel sur cette page ? Flèche ACTIVE
+        uniquement (une flèche grisée = dernière diapo : avant, le bot
+        relançait le carrousel « 1 diapo » à chaque cycle pendant plus
+        d'une heure sans jamais laisser l'IA cliquer Next)."""
+        pr = self._carousel_probe()
+        if pr.get("el") is None or pr.get("disabled"):
+            return False
+        if pr.get("kind") != "carousel" and not self._is_card_carousel():
+            return False
+        # Anti-boucle : même page, carrousel déjà tenté 2 fois sans
+        # avancer → on laisse la main au flux normal (IA / Next).
+        stuck = self.__dict__.setdefault("_carousel_stuck", {})
+        if stuck.get(pr.get("sig", "")[:600], 0) >= 2:
+            return False
+        return True
+
     def _is_card_carousel(self) -> bool:
         """Page de fiches (vocabulaire, règles…) avec une flèche pour
         passer à la suivante, SANS rien à répondre (pas de tuiles, de
@@ -10780,65 +10953,96 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
             return False
         return not busy
 
-    def _run_carousel(self) -> None:
-        """Fait défiler TOUTES les diapos : la flèche est re-cherchée à
-        chaque fois (avant : trouvée une seule fois, elle devenait
-        périmée après le 1er clic → un seul clic). Arrêt quand il n'y a
-        plus de flèche ou que la page ne change plus."""
+    def _carousel_click(self, arrow) -> None:
+        """Clic sur la flèche : vrai clic CDP, sinon clic JS / touche →."""
         try:
-            body = self.driver.find_element(By.TAG_NAME, "body")
-        except (NoSuchElementException, WebDriverException):
-            body = None
-        seen, still, arrow, last_sig = set(), 0, None, None
-        for _ in range(40):
-            # Signature de la diapo (minuteurs audio retirés)
-            sig = re.sub(r"\d{1,2}:\d{2}", "", self._get_page_text())[:1500]
-            if sig in seen and sig != last_sig:
-                break                        # retour au début : tour fini
-            if sig == last_sig:
-                still += 1
-                if still >= 2:
-                    break                    # plus rien ne bouge
-            else:
-                still = 0
-                seen.add(sig)
-                # Chaque diapo peut porter un texte / un transcript : on
-                # les récolte AVANT de passer à la suivante.
-                self._harvest_page_texts()
-            last_sig = sig
-            arrow = (self._find_carousel_arrow()
-                     or self._find_stock_pagination_arrow())
-            if arrow is None or not safe_is_displayed(arrow):
-                break
-            # Flèche grisée = dernière diapo
-            try:
-                if self.driver.execute_script("""
-                    const a = arguments[0];
-                    const b = a.closest('button, [role=button], a') || a;
-                    const st = getComputedStyle(b);
-                    return !!(b.disabled || b.getAttribute('aria-disabled') === 'true'
-                              || parseFloat(st.opacity) < 0.45
-                              || st.pointerEvents === 'none');
-                """, arrow):
-                    break
-            except WebDriverException:
-                pass
-            try:
-                if not self._cdp_click(arrow):
-                    self._ghost_click(arrow)
-            except Exception:  # noqa: BLE001
-                if body is not None:
-                    try:
-                        body.send_keys(Keys.ARROW_RIGHT)
-                    except WebDriverException:
-                        pass
-            time.sleep(0.8)                  # animation de la diapo
-        slides = len(seen)
-        print(f"   🎠 Carrousel : {slides} diapo(s) parcourue(s)")
+            if self._cdp_click(arrow):
+                return
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.driver.execute_script("arguments[0].click();", arrow)
+            return
+        except WebDriverException:
+            pass
+        try:
+            self.driver.find_element(By.TAG_NAME, "body").send_keys(
+                Keys.ARROW_RIGHT)
+        except WebDriverException:
+            pass
 
-        time.sleep(1.5)
+    def _run_carousel(self) -> None:
+        """Fait défiler TOUTES les diapos, vite : 1 appel JS par diapo
+        (flèche + signature), puis on attend que la diapo CHANGE (au lieu
+        d'une pause fixe). Arrêt : flèche absente / grisée, retour à une
+        diapo déjà vue, ou plus rien ne bouge."""
+        t0 = time.time()
+        seen, arrow, first_sig = set(), None, None
+        pr = self._carousel_probe()
+        for _ in range(40):
+            sig = pr.get("sig", "")
+            if first_sig is None:
+                first_sig = sig
+            if sig in seen:
+                break                        # retour au début : tour fini
+            seen.add(sig)
+            # Texte / transcript de la diapo, récoltés AVANT de passer à
+            # la suivante (le transcript seulement s'il y en a un).
+            try:
+                self._update_reading_passage()
+                if pr.get("tr"):
+                    self._harvest_page_texts()
+            except Exception:  # noqa: BLE001
+                pass
+            arrow = pr.get("el")
+            if arrow is None or pr.get("disabled"):
+                break                        # dernière diapo
+            self._carousel_click(arrow)
+            # Attente du changement de diapo (max ~2,5 s)
+            changed = False
+            for _w in range(17):
+                time.sleep(0.15)
+                pr = self._carousel_probe()
+                if pr.get("sig", "") != sig:
+                    changed = True
+                    time.sleep(0.2)          # fin de l'animation
+                    pr = self._carousel_probe()
+                    break
+            if not changed:
+                # 2e essai (clic perdu pendant l'animation)
+                self._carousel_click(arrow)
+                time.sleep(0.8)
+                pr = self._carousel_probe()
+                if pr.get("sig", "") == sig:
+                    break                    # plus rien ne bouge
+        slides = len(seen)
+        print(f"   🎠 Carrousel : {slides} diapo(s) parcourue(s) "
+              f"en {time.time() - t0:.0f} s")
+        # Anti-boucle (cf. _carousel_should_run)
+        stuck = self.__dict__.setdefault("_carousel_stuck", {})
+        key = (first_sig or "")[:600]
+        if slides <= 1:
+            stuck[key] = stuck.get(key, 0) + 1
+        # On vient de travailler sur la page : l'Auto-Refresh ne doit PAS
+        # tomber juste après (il renvoyait à la 1re diapo → tout à refaire).
+        try:
+            self.last_refresh_time = max(
+                self.last_refresh_time,
+                time.time() - REFRESH_INTERVAL + 60)
+        except Exception:  # noqa: BLE001
+            pass
+
+        time.sleep(0.5)
         self._harvest_page_texts()          # dernière diapo
-        for lb in ("Next", "Suivant", "Continue", "Continuer", "Finish"):
+        # Transcript de la page (souvent chargé APRÈS la vidéo) : capturé
+        # tout de suite, la fonction clique Next si c'est une page d'intro.
+        try:
+            if self._capture_transcript_if_present():
+                return
+        except Exception:  # noqa: BLE001
+            pass
+        for lb in ("Next", "Suivant", "Continue", "Continuer", "Finish",
+                   "Siguiente", "Weiter", "Avanti", "Próximo"):
             try:
                 xp = (
                     f"//button[contains(., '{lb}')] | "
@@ -10857,8 +11061,22 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                     return
             except WebDriverException:
                 continue
-        if arrow and safe_is_displayed(arrow):
-            self._ghost_click(arrow)
+        # Libellé exact (span cliquable, etc.)
+        for lb in ("Next", "Suivant", "Continue", "Continuer"):
+            try:
+                btn = self._find_element_by_text(lb)
+            except WebDriverException:
+                btn = None
+            if btn is not None and safe_is_displayed(btn) \
+                    and not is_skip_word(safe_text(btn)):
+                self._ghost_click(btn)
+                return
+        if arrow is not None and not pr.get("disabled"):
+            try:
+                if safe_is_displayed(arrow):
+                    self._ghost_click(arrow)
+            except Exception:  # noqa: BLE001
+                pass
         self._click_validation()
 
     # =================================================================
@@ -11706,9 +11924,7 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                     self._reset_state()
                     consecutive_none = 0
                     continue
-                if self._find_carousel_arrow() or (
-                        self._find_stock_pagination_arrow()
-                        and self._is_card_carousel()):
+                if self._carousel_should_run():
                     print(f"   ↪ Cycle {cycle_num} : carrousel")
                     self._run_carousel()
                     self._reset_state()
