@@ -12522,4 +12522,4 @@ if __name__ == "__main__":
             print("   ⚠️ Choix invalide, entre un chiffre entre 1 et 6.")
 
     bot = HybridBot(langue=langue_choisie)
-    bot.run()
+    bot.run()
