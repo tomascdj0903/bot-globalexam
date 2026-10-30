@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.10.30.3"
+BOT_VERSION = "2026.10.30.4"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -223,11 +223,19 @@ JS_FAKE_SPEECH = r"""
     // réutiliser ce flux. La voix est jouée dedans plus tard via
     // window.__botPlayVoice().
     window.__botMicStream = function () {
-      if (!window.__botDst) {
+      if (!window.__botCtx || window.__botCtx.state === 'closed') {
         const Ctx = window.AudioContext || window.webkitAudioContext;
         window.__botCtx = new Ctx();
-        window.__botDst = window.__botCtx.createMediaStreamDestination();
+        window.__botDst = null;
       }
+      // Le site ARRÊTE la piste du micro à la fin d'un enregistrement
+      // (track.stop()). Redonner ce flux mort à l'enregistrement suivant
+      // = silence (bug : 2e oral « le micro s'ouvre mais rien n'est dit »).
+      // → nouveau flux si la piste précédente est terminée.
+      const dead = d => !d || d.stream.getAudioTracks()
+                                 .every(t => t.readyState === 'ended');
+      if (dead(window.__botDst))
+        window.__botDst = window.__botCtx.createMediaStreamDestination();
       return window.__botDst.stream;
     };
     window.__botPlayVoice = async function () {
