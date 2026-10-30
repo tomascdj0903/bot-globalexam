@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.10.30.4"
+BOT_VERSION = "2026.10.30.5"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -10155,98 +10155,112 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         except WebDriverException:
             return False
 
-        # 4) « Start » : 3 façons de cliquer tant que le micro n'est pas
-        #    ouvert par le site
-        self._activate_page()
-        dur, calls = 0.0, 0
-        for attempt in range(3):
-            fresh = self._open_recorder_button()
-            if fresh is not None:
-                btn = fresh
-            if attempt == 0:
-                if not self._cdp_click(btn):
-                    self._ghost_click(btn)
-            elif attempt == 1:
-                self._ghost_click(btn)
-            else:
-                try:
-                    self.driver.execute_script("arguments[0].click();", btn)
-                except WebDriverException:
-                    pass
-            for _ in range(10):
-                time.sleep(0.5)
-                try:
-                    d = self.driver.execute_script(
-                        "return {c: window.__botGumCalls || 0,"
-                        " d: window.__botVoiceDur || 0,"
-                        " e: window.__botGumErr || ''};") or {}
-                except WebDriverException:
-                    d = {}
-                calls, dur = d.get("c", 0), d.get("d", 0)
-                if calls or d.get("e"):
-                    break
-                if self._recording_ui_visible() or \
-                        self._open_recorder_button() is None:
-                    # le site enregistre déjà : on joue la voix dedans
-                    try:
-                        dur = self.driver.execute_async_script(
-                            "const done = arguments[arguments.length-1];"
-                            "(window.__botPlayVoice ? window.__botPlayVoice()"
-                            " : Promise.resolve(0)).then(done)"
-                            ".catch(e => done(0));") or 0
-                    except WebDriverException:
-                        dur = 0
-                    if dur:
-                        calls = 1
-                        break
-            if calls:
-                break
-        if not calls:
-            print("   ⚠️ Le site n'a pas ouvert le micro (oral libre)")
-            self._dump_speaking_page(tag="oral_libre_echec")
-            self._click_stop_recording()
-            return False
-        print(f"   🎙️ Réponse dite ({float(dur or 0):.1f} s)")
-        time.sleep(max(1.5, float(dur or 0) + 1.2))
-        self._dump_speaking_page(tag="oral_libre_enregistrement")
-
-        # 5) arrêter l'enregistrement (carré / même bouton)
-        stopped = self._click_stop_recording()
-        if not stopped:
+        # 4) « Start ». Le MÊME bouton alterne Start → Stop → Restart :
+        #    on se fie à son libellé (avant : un 2e clic « de secours »
+        #    tombait sur « Stop » quand le site tardait à ouvrir le micro
+        #    → enregistrement coupé puis relancé, et le « stop » final en
+        #    relançait un → « Finish » en plein enregistrement).
+        def rec_state():
             try:
-                rb = self.driver.execute_script("""
+                return self.driver.execute_script("""
+                    const vis = e => { const r = e.getBoundingClientRect();
+                                       return r.width > 0 && r.height > 0; };
+                    const b = [...document.querySelectorAll(
+                        '[data-testid="recorder-action-button"]')].find(vis);
+                    if (!b) return {lbl: '', calls: window.__botGumCalls || 0};
+                    const t = ((b.getAttribute('aria-label') || '') + ' '
+                               + (b.innerText || '')).toLowerCase();
+                    let lbl = 'other';
+                    if (/stop|arr[êe]t/.test(t)) lbl = 'stop';
+                    else if (/restart|retry|again|recommenc|r[ée]essay/.test(t)) lbl = 'restart';
+                    else if (/start|record|d[ée]marr|enregistr|empez|inici|grab|aufnehm|inizia|registra|grava|comece/.test(t)) lbl = 'start';
+                    return {lbl: lbl, calls: window.__botGumCalls || 0,
+                            dur: window.__botVoiceDur || 0};
+                """) or {}
+            except WebDriverException:
+                return {}
+
+        def click_rec():
+            try:
+                el = self.driver.execute_script("""
                     const vis = e => { const r = e.getBoundingClientRect();
                                        return r.width > 0 && r.height > 0; };
                     return [...document.querySelectorAll(
                         '[data-testid="recorder-action-button"]')].find(vis)
                         || null;""")
             except WebDriverException:
-                rb = None
-            if rb is not None:
-                self._ghost_click(rb)
-                stopped = True
-        # Attendre que l'enregistrement soit VRAIMENT déposé (bouton
-        # « Stop » disparu, « Restart » / lecteur de la réponse affiché).
-        # Bug observé : « Finish » cliqué 3 s après le stop → « You have
-        # not submitted a response ».
-        t0 = time.time()
-        while time.time() - t0 < 20:
-            try:
-                st = self.driver.execute_script("""
-                    const vis = e => { const r = e.getBoundingClientRect();
-                                       return r.width > 0 && r.height > 0; };
-                    const lbl = [...document.querySelectorAll('button')]
-                        .filter(vis).map(b => (b.innerText || '').trim());
-                    return {stop: lbl.some(t => /^(stop|arr[êe]ter)$/i.test(t)),
-                            done: lbl.some(t => /^(restart|retry|try again|recommencer|r[ée]essayer)$/i.test(t))};
-                """) or {}
-            except WebDriverException:
-                st = {}
-            if not st.get("stop") and st.get("done"):
+                el = None
+            if el is None:
+                return False
+            if not self._cdp_click(el):
+                self._ghost_click(el)
+            return True
+
+        self._activate_page()
+        dur, calls, recording = 0.0, 0, False
+        for attempt in range(2):
+            st = rec_state()
+            if st.get("lbl") != "start":
+                break                      # déjà en cours / pas de Start
+            click_rec()
+            t0 = time.time()
+            while time.time() - t0 < 12:   # le site peut mettre ~10 s
+                time.sleep(0.4)
+                st = rec_state()
+                calls, dur = st.get("calls", 0), st.get("dur", 0)
+                if st.get("lbl") == "stop":
+                    recording = True
+                    if calls:
+                        break
+                if calls:
+                    break
+            if recording or calls:
                 break
+            print("   🔁 Le bouton n'est pas passé sur « Stop » → nouvel essai")
+        if recording and not calls:
+            # Micro ouvert par le site plus tôt : on joue la voix dedans
+            try:
+                dur = self.driver.execute_async_script(
+                    "const done = arguments[arguments.length-1];"
+                    "(window.__botPlayVoice ? window.__botPlayVoice()"
+                    " : Promise.resolve(0)).then(done)"
+                    ".catch(e => done(0));") or 0
+            except WebDriverException:
+                dur = 0
+            calls = 1 if dur else 0
+        if not calls:
+            print("   ⚠️ Le site n'a pas ouvert le micro (oral libre)")
+            self._dump_speaking_page(tag="oral_libre_echec")
+            if rec_state().get("lbl") == "stop":
+                click_rec()
+            return False
+        print(f"   🎙️ Réponse dite ({float(dur or 0):.1f} s)")
+        # attendre la fin de la voix (+ marge), le bouton doit rester « Stop »
+        time.sleep(max(1.5, float(dur or 0) + 1.5))
+        self._dump_speaking_page(tag="oral_libre_enregistrement")
+
+        # 5) arrêter : clic sur « Stop » UNIQUEMENT s'il affiche « Stop »,
+        #    puis attente de « Restart » (= réponse déposée)
+        t0 = time.time()
+        stopped = False
+        self._rec_reclick = False
+        while time.time() - t0 < 25:
+            st = rec_state()
+            lbl = st.get("lbl")
+            if lbl == "stop" and not stopped:
+                print("   ⏹️  Fin de l'enregistrement (bouton « Stop »)")
+                click_rec()
+                stopped = True
+            elif lbl != "stop" and (stopped or lbl in ("restart", "")):
+                break
+            elif (lbl == "stop" and stopped and not getattr(self, "_rec_reclick", False)
+                  and time.time() - t0 > 6):
+                self._rec_reclick = True   # 1er clic perdu → on réessaie 1×
+                click_rec()
             time.sleep(0.5)
-        print(f"   💾 Enregistrement déposé ({time.time() - t0:.0f} s)")
-        time.sleep(2.5)
+        print(f"   💾 Enregistrement déposé (bouton : "
+              f"« {rec_state().get('lbl') or '—'} »)")
+        time.sleep(3.0)
 
         # 6) l'IA du site note : on attend, puis Validate / suite
         for _ in range(12):
