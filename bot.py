@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.10.30.2"
+BOT_VERSION = "2026.10.30.3"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -9920,93 +9920,101 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
             print(f"   ⚠️ Voix Windows indisponible : {str(e)[:60]}")
         return b""
 
-    _JS_TAB_PANEL_TEXT = r"""
-        // Texte du panneau de contenu (onglet actif) : plus grand bloc
-        // visible qui ne contient NI les onglets NI l'enregistreur NI la
-        // question.
-        const vis = e => { const r = e.getBoundingClientRect();
-                           return r.width > 0 && r.height > 0; };
-        const q = (arguments[0] || '').slice(0, 60);
-        let best = '';
-        for (const e of document.querySelectorAll('div, section, article')) {
-            if (!vis(e)) continue;
-            if (e.querySelector('#tab-items-container, '
-                + '[data-testid="recorder-action-button"]')) continue;
-            if (e.closest('#tab-items-container')) continue;
-            const t = (e.innerText || '').trim();
-            if (q && t.includes(q)) continue;
-            if (t.length > best.length) best = t;
+    _JS_SUPPORTS = r"""
+        // Contenu des onglets « Video / Text / Vocabulary » lu DIRECTEMENT
+        // dans la page (textContent : marche même pour les panneaux
+        // cachés), + la « Suggestion » (réponse type) déjà présente,
+        // cachée, avant même de répondre.
+        const tabs = [...document.querySelectorAll('#tab-items-container button')]
+            .map(b => (b.innerText || b.textContent || '').trim());
+        const box = document.getElementById('supports-questions-container');
+        const panels = [];
+        if (box) {
+            const host = box.firstElementChild || box;
+            let kids = [...host.querySelectorAll(':scope > div > div > div')]
+                .filter(d => /rounded-2xl/.test(String(d.className)));
+            if (!kids.length)
+                kids = [...box.querySelectorAll('div')].filter(d =>
+                    /rounded-2xl/.test(String(d.className))
+                    && !d.parentElement.closest('[class*="rounded-2xl"]'));
+            kids.forEach((d, i) => {
+                const h2 = d.querySelector('h2');
+                const ps = [...d.querySelectorAll('.bullet-list p, .bullet-list li')]
+                    .map(p => (p.textContent || '').trim()).filter(Boolean);
+                panels.push({tab: tabs[i] || '', video: !!d.querySelector('video'),
+                             title: h2 ? h2.textContent.trim() : '',
+                             lines: ps,
+                             text: ps.length ? ps.join('\n')
+                                   : (d.textContent || '').trim()});
+            });
         }
-        return best;
+        // Suggestion : <span>Suggestion</span><div><p>Example Response:</p><p>…</p></div>
+        let sugg = '';
+        for (const sp of document.querySelectorAll('span')) {
+            if ((sp.textContent || '').trim() !== 'Suggestion') continue;
+            const d = sp.nextElementSibling;
+            if (!d) continue;
+            const ps = [...d.querySelectorAll('p')].map(p =>
+                (p.textContent || '').trim()).filter(Boolean);
+            sugg = ps.filter(t => !/^(example|sample|suggested)\s+(response|answer)\s*:?$/i
+                                 .test(t)).join(' ');
+            if (sugg) break;
+        }
+        return {tabs: tabs, panels: panels, sugg: sugg};
     """
 
     def _harvest_tabs(self, question: str = "") -> list[str]:
-        """Onglets « Video / Text / Vocabulary » au-dessus de l'exercice :
-        Video → transcript ; Text → texte lu ; Vocabulary → mots à
-        employer. Tout est mémorisé (comparaison texte / vidéo). Renvoie
-        la liste du vocabulaire (vide si pas d'onglet)."""
+        """Onglets « Video / Text / Vocabulary » : transcript de la vidéo,
+        texte et vocabulaire mémorisés (lus dans la page, sans dépendre
+        de l'onglet affiché) + réponse type du site (« Suggestion »)
+        rangée dans self._open_suggestion. Renvoie le vocabulaire."""
+        self._open_suggestion = ""
         try:
-            tabs = self.driver.execute_script("""
-                const c = document.getElementById('tab-items-container');
-                if (!c) return [];
-                return [...c.querySelectorAll('button')]
-                    .map(b => [b, (b.innerText || '').trim()]);
-            """) or []
+            info = self.driver.execute_script(self._JS_SUPPORTS) or {}
         except WebDriverException:
-            return []
-        if not tabs:
-            return []
+            info = {}
+        tabs = info.get("tabs") or []
         vocab: list[str] = []
-        print(f"   📑 Onglets : {' / '.join(t for _, t in tabs)} → lecture "
-              f"de chacun avant de répondre")
-        # Video (transcript) d'abord, puis les autres, Vocabulary en dernier
-        def rank(lbl: str) -> int:
-            low = lbl.lower()
-            if re.search(r"vid|v[íi]deo", low):
-                return 0
-            if re.search(r"vocab|wortschatz|vocabol", low):
-                return 2
-            return 1
-        for el, lbl in sorted(tabs, key=lambda t: rank(t[1])):
+        if tabs:
+            print(f"   📑 Onglets : {' / '.join(tabs)}")
+            # Transcript : seulement visible sur l'onglet Vidéo
             try:
-                self._ghost_click(el)
+                self.driver.execute_script("""
+                    const b = [...document.querySelectorAll(
+                        '#tab-items-container button')].find(x =>
+                        /vid/i.test(x.textContent || ''));
+                    if (b) b.click();""")
+                time.sleep(1.0)
             except WebDriverException:
+                pass
+        try:
+            self._harvest_page_texts()
+        except Exception:  # noqa: BLE001
+            pass
+        for pnl in info.get("panels") or []:
+            if pnl.get("video"):
                 continue
-            time.sleep(1.2)
-            r = rank(lbl)
-            if r == 0:
-                # transcript de la vidéo (ouvre / mémorise / referme)
-                try:
-                    self._harvest_page_texts()
-                except Exception:  # noqa: BLE001
-                    pass
-                continue
-            try:
-                txt = (self.driver.execute_script(
-                    self._JS_TAB_PANEL_TEXT, question) or "").strip()
-            except WebDriverException:
-                txt = ""
-            if r == 2:
-                for line in txt.splitlines():
-                    w = line.strip(" •-–\t")
-                    if (w and len(w) <= 40 and ":" not in w
-                            and not re.search(r"vocabulary|vocabulaire",
-                                              w, re.I)):
+            name = (pnl.get("title") or pnl.get("tab") or "").strip()
+            lines = [l for l in (pnl.get("lines") or []) if l]
+            if re.search(r"vocab|wortschatz|vocabol", name, re.I):
+                for w in lines:
+                    w = w.strip(" •-–\t")
+                    if w and len(w) <= 40 and ":" not in w:
                         vocab.append(w)
                 if vocab:
                     print(f"   📚 Vocabulaire à employer : {', '.join(vocab)}")
                     self._remember_text("Vocabulaire à employer : "
                                         + ", ".join(vocab), "VOCABULAIRE")
-            elif len(txt) >= 40:
-                self._remember_text(txt[:6000], f"TEXTE (onglet {lbl})")
-                print(f"   📝 Onglet « {lbl} » mémorisé "
+                continue
+            txt = (pnl.get("text") or "").strip()
+            if len(txt) >= 40:
+                self._remember_text(txt[:6000], f"TEXTE (onglet {name or 'Text'})")
+                print(f"   📝 Onglet « {name or 'Text'} » mémorisé "
                       f"({len(txt)} car.) : {txt[:80].replace(chr(10), ' ')}…")
-        # retour sur le 1er onglet (vidéo) pour l'enregistreur
-        try:
-            self._ghost_click(tabs[0][0])
-            time.sleep(0.8)
-        except WebDriverException:
-            pass
+        sugg = (info.get("sugg") or "").strip().strip("'\"‘’“” ")
+        if len(sugg) >= 15:
+            self._open_suggestion = sugg
+            print(f"   💡 Réponse type du site : « {sugg[:120]} »")
         return vocab
 
     def _compose_spoken_answer(self, vocab: list | None = None) -> str:
@@ -10113,7 +10121,15 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                 return True
 
         # 3) rédiger la réponse + la convertir en voix
-        answer = self._compose_spoken_answer(tab_vocab)
+        sugg = getattr(self, "_open_suggestion", "") or ""
+        used = [w for w in tab_vocab
+                if re.search(r"\b" + re.escape(w.lower()), sugg.lower())]
+        if sugg and len(sugg) <= 300 and (not tab_vocab or len(used) >= 2):
+            answer = sugg
+            print("   💡 Réponse type du site utilisée"
+                  + (f" (vocabulaire : {', '.join(used)})" if used else ""))
+        else:
+            answer = self._compose_spoken_answer(tab_vocab)
         if not answer:
             print("   ⚠️ Pas de réponse générée pour l'oral libre")
             return False
@@ -10201,7 +10217,28 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
             if rb is not None:
                 self._ghost_click(rb)
                 stopped = True
-        time.sleep(2.0)
+        # Attendre que l'enregistrement soit VRAIMENT déposé (bouton
+        # « Stop » disparu, « Restart » / lecteur de la réponse affiché).
+        # Bug observé : « Finish » cliqué 3 s après le stop → « You have
+        # not submitted a response ».
+        t0 = time.time()
+        while time.time() - t0 < 20:
+            try:
+                st = self.driver.execute_script("""
+                    const vis = e => { const r = e.getBoundingClientRect();
+                                       return r.width > 0 && r.height > 0; };
+                    const lbl = [...document.querySelectorAll('button')]
+                        .filter(vis).map(b => (b.innerText || '').trim());
+                    return {stop: lbl.some(t => /^(stop|arr[êe]ter)$/i.test(t)),
+                            done: lbl.some(t => /^(restart|retry|try again|recommencer|r[ée]essayer)$/i.test(t))};
+                """) or {}
+            except WebDriverException:
+                st = {}
+            if not st.get("stop") and st.get("done"):
+                break
+            time.sleep(0.5)
+        print(f"   💾 Enregistrement déposé ({time.time() - t0:.0f} s)")
+        time.sleep(2.5)
 
         # 6) l'IA du site note : on attend, puis Validate / suite
         for _ in range(12):
