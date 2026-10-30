@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.10.30.1"
+BOT_VERSION = "2026.10.30.2"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -7294,6 +7294,41 @@ transcript→{{"type":"transcript","transcript_action":true}}"""
                     print(f"   ✒️ Attention ponctuation/majuscules : "
                           f"{'; '.join(errs[:3])}")
 
+        # ── PHRASE À REMETTRE DANS L'ORDRE (même étiquetée
+        # « reorder_chronological ») : chaque tuile au plus autant de fois
+        # qu'elle existe, et la tuile qui FINIT la phrase (« abroad. »)
+        # en dernier. Bug observé : « my » utilisé 2× (1 seule tuile) et
+        # « because my family lives abroad. I am used to… ».
+        if (actions and code_options and exercise_type in (
+                "reorder_sentence", "reorder", "reorder_chronological")
+                and len(code_options) >= 4
+                and sum(len(str(o).split()) for o in code_options)
+                <= 2 * len(code_options)):
+            from collections import Counter as _C
+            stock_c = _C(str(o) for o in code_options)
+            extra = _C(str(a) for a in actions) - stock_c
+            if extra:
+                print(f"   ⚠️ Tuile(s) en trop : {dict(extra)} → nouvel "
+                      f"essai (chaque tuile une seule fois)")
+                actions = self._forced_retry(
+                    image, page_text, exercise_type, nb_dz, code_options,
+                    actions)
+                extra = _C(str(a) for a in actions) - stock_c
+                if extra:
+                    # on garde les DERNIÈRES occurrences
+                    rev, left = [], dict(stock_c)
+                    for a in reversed(actions):
+                        if left.get(str(a), 0) > 0:
+                            left[str(a)] -= 1
+                            rev.append(a)
+                    actions = list(reversed(rev))
+                    print(f"   🔧 Doublons retirés : {actions}")
+            rot = self._rotate_final_punct(actions)
+            if rot != actions:
+                print(f"   ✒️ Fin de phrase (« {rot[-1]} ») remise en "
+                      f"dernier : {' '.join(map(str, rot))}")
+                actions = rot
+
         # Vérification dédiée QCM MULTI-RÉPONSES (ce type saute aussi la
         # double-passe → sinon un seul avis, d'où les « trop / pas assez »
         # fréquents). Relecture qui re-juge CHAQUE option : retire les
@@ -8607,6 +8642,26 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         return order[:pos] + [lone] + order[pos:]
 
     @staticmethod
+    def _rotate_final_punct(order: list) -> list:
+        """« because my family lives abroad. I am used to … alone » →
+        « I am used to … alone because my family lives abroad. » : si UNE
+        seule tuile termine la phrase (. ? !) et qu'elle est suivie d'un
+        morceau qui commence par une majuscule, on remet ce morceau en
+        tête (la phrase est juste coupée au mauvais endroit)."""
+        words = [str(w) for w in order]
+        ends = [i for i, w in enumerate(words)
+                if w.strip() and w.strip()[-1] in ".?!"]
+        if any(w.strip()[:1] in "¿¡" for w in words):
+            return list(order)
+        if len(ends) != 1 or ends[0] == len(words) - 1:
+            return list(order)
+        i = ends[0]
+        nxt = words[i + 1].lstrip("¿¡\"'«")
+        if not nxt[:1].isupper():
+            return list(order)
+        return list(order[i + 1:]) + list(order[:i + 1])
+
+    @staticmethod
     def _punct_violations(order: list, tiles: list | None = None) -> list:
         """Règles de ponctuation / casse d'une phrase remise en ordre.
         Renvoie la liste des fautes (vide = OK) :
@@ -9865,11 +9920,100 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
             print(f"   ⚠️ Voix Windows indisponible : {str(e)[:60]}")
         return b""
 
-    def _compose_spoken_answer(self) -> str:
+    _JS_TAB_PANEL_TEXT = r"""
+        // Texte du panneau de contenu (onglet actif) : plus grand bloc
+        // visible qui ne contient NI les onglets NI l'enregistreur NI la
+        // question.
+        const vis = e => { const r = e.getBoundingClientRect();
+                           return r.width > 0 && r.height > 0; };
+        const q = (arguments[0] || '').slice(0, 60);
+        let best = '';
+        for (const e of document.querySelectorAll('div, section, article')) {
+            if (!vis(e)) continue;
+            if (e.querySelector('#tab-items-container, '
+                + '[data-testid="recorder-action-button"]')) continue;
+            if (e.closest('#tab-items-container')) continue;
+            const t = (e.innerText || '').trim();
+            if (q && t.includes(q)) continue;
+            if (t.length > best.length) best = t;
+        }
+        return best;
+    """
+
+    def _harvest_tabs(self, question: str = "") -> list[str]:
+        """Onglets « Video / Text / Vocabulary » au-dessus de l'exercice :
+        Video → transcript ; Text → texte lu ; Vocabulary → mots à
+        employer. Tout est mémorisé (comparaison texte / vidéo). Renvoie
+        la liste du vocabulaire (vide si pas d'onglet)."""
+        try:
+            tabs = self.driver.execute_script("""
+                const c = document.getElementById('tab-items-container');
+                if (!c) return [];
+                return [...c.querySelectorAll('button')]
+                    .map(b => [b, (b.innerText || '').trim()]);
+            """) or []
+        except WebDriverException:
+            return []
+        if not tabs:
+            return []
+        vocab: list[str] = []
+        print(f"   📑 Onglets : {' / '.join(t for _, t in tabs)} → lecture "
+              f"de chacun avant de répondre")
+        # Video (transcript) d'abord, puis les autres, Vocabulary en dernier
+        def rank(lbl: str) -> int:
+            low = lbl.lower()
+            if re.search(r"vid|v[íi]deo", low):
+                return 0
+            if re.search(r"vocab|wortschatz|vocabol", low):
+                return 2
+            return 1
+        for el, lbl in sorted(tabs, key=lambda t: rank(t[1])):
+            try:
+                self._ghost_click(el)
+            except WebDriverException:
+                continue
+            time.sleep(1.2)
+            r = rank(lbl)
+            if r == 0:
+                # transcript de la vidéo (ouvre / mémorise / referme)
+                try:
+                    self._harvest_page_texts()
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
+            try:
+                txt = (self.driver.execute_script(
+                    self._JS_TAB_PANEL_TEXT, question) or "").strip()
+            except WebDriverException:
+                txt = ""
+            if r == 2:
+                for line in txt.splitlines():
+                    w = line.strip(" •-–\t")
+                    if (w and len(w) <= 40 and ":" not in w
+                            and not re.search(r"vocabulary|vocabulaire",
+                                              w, re.I)):
+                        vocab.append(w)
+                if vocab:
+                    print(f"   📚 Vocabulaire à employer : {', '.join(vocab)}")
+                    self._remember_text("Vocabulaire à employer : "
+                                        + ", ".join(vocab), "VOCABULAIRE")
+            elif len(txt) >= 40:
+                self._remember_text(txt[:6000], f"TEXTE (onglet {lbl})")
+                print(f"   📝 Onglet « {lbl} » mémorisé "
+                      f"({len(txt)} car.) : {txt[:80].replace(chr(10), ' ')}…")
+        # retour sur le 1er onglet (vidéo) pour l'enregistreur
+        try:
+            self._ghost_click(tabs[0][0])
+            time.sleep(0.8)
+        except WebDriverException:
+            pass
+        return vocab
+
+    def _compose_spoken_answer(self, vocab: list | None = None) -> str:
         """Réponse orale (≈ 2 phrases) à la question de la page, fondée
         sur le transcript / texte de la leçon et le vocabulaire."""
         page = self._get_page_text()[:1500]
-        vocab = self._activity_vocab()[:60]
+        vocab = list(vocab or []) or self._activity_vocab()[:60]
         prompt = (
             f"Tu es un étudiant de niveau C1 en {self.lang_name}. Une "
             f"question orale est posée sur la page ; tu y réponds À VOIX "
@@ -9880,7 +10024,10 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
             "CONSIGNE : réponds directement à la question en "
             f"{self.lang_name}, en 2 phrases courtes (30 à 40 mots, 190 "
             "caractères MAXIMUM au total). Appuie-toi sur le transcript / "
-            "le texte de la leçon s'il en parle. Si la consigne demande "
+            "le texte de la leçon s'il en parle ; si la question compare "
+            "le TEXTE et la VIDÉO, compare le texte mémorisé (onglet Text) "
+            "et le TRANSCRIPT de la vidéo, et dis précisément ce qu'ils "
+            "ont en commun ou non. Si la consigne demande "
             "d'utiliser des mots du vocabulaire, emploie-en AU MOINS TROIS "
             "de la liste, EXACTEMENT tels quels. Phrases naturelles, sans "
             "émoji, sans guillemets.\n"
@@ -9922,12 +10069,26 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                 return True
             return False
 
-        # 1) PRIORITÉ : le transcript / texte de la page est récolté
-        #    AVANT de répondre (la réponse s'en sert).
+        # 1) PRIORITÉ : transcript (onglet Video), texte (onglet Text) et
+        #    vocabulaire (onglet Vocabulary) récoltés AVANT de répondre.
         try:
-            self._harvest_page_texts()
-        except Exception:  # noqa: BLE001
-            pass
+            question = self.driver.execute_script("""
+                const b = document.querySelector(
+                    '[data-testid="recorder-action-button"]');
+                let c = b;
+                for (let i = 0; i < 8 && c; i++, c = c.parentElement) {
+                    const t = (c.innerText || '').trim();
+                    if (t.length > 40) return t.split('\\n')[0];
+                }
+                return '';""") or ""
+        except WebDriverException:
+            question = ""
+        tab_vocab = self._harvest_tabs(question)
+        if not tab_vocab:
+            try:
+                self._harvest_page_texts()
+            except Exception:  # noqa: BLE001
+                pass
 
         # 2) micro factice actif sur la page (rechargement 1×, comme la
         #    prononciation)
@@ -9952,7 +10113,7 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                 return True
 
         # 3) rédiger la réponse + la convertir en voix
-        answer = self._compose_spoken_answer()
+        answer = self._compose_spoken_answer(tab_vocab)
         if not answer:
             print("   ⚠️ Pas de réponse générée pour l'oral libre")
             return False
