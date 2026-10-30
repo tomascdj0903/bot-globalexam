@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.10.27.2"
+BOT_VERSION = "2026.10.30.1"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -9769,6 +9769,294 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         except (OSError, WebDriverException) as e:
             print(f"   ⚠️ Diagnostic prononciation : {str(e)[:60]}")
 
+    # ── ORAL LIBRE : « Do both the text and video emphasize… ? Provide a
+    # reason, using at least two words from the "vocabulary" tab » ──────
+    # Exercice noté par IA : un bouton « Start » (data-testid
+    # recorder-action-button) lance l'enregistrement, on répond À VOIX
+    # HAUTE. Le bot rédige une réponse (Gemini : consigne + transcript
+    # + vocabulaire), la convertit en voix (TTS) et la joue dans le micro
+    # factice, comme pour la prononciation.
+    _JS_OPEN_RECORDER = r"""
+        const vis = e => { const r = e.getBoundingClientRect();
+                           return r.width > 0 && r.height > 0; };
+        if ([...document.querySelectorAll(
+                '[data-role="skip-speak-part"]')].some(vis)) return null;
+        for (const b of document.querySelectorAll(
+                '[data-testid="recorder-action-button"]')) {
+            if (!vis(b)) continue;
+            const t = (b.innerText || '').trim();
+            if (/pronounce|prononc/i.test(t)) continue;
+            if (/start|record|d[ée]marr|enregistr|comenzar|empezar|iniciar|grabar|starten|aufnehmen|inizia|registra|gravar|comece/i.test(t))
+                return b;
+        }
+        return null;
+    """
+
+    def _open_recorder_button(self):
+        try:
+            return self.driver.execute_script(self._JS_OPEN_RECORDER)
+        except WebDriverException:
+            return None
+
+    def _tts_audio(self, text: str) -> bytes:
+        """Voix de synthèse (mp3/wav) du texte à dire. 1) voix Google
+        Traduction (naturelle, découpée par phrases) ; 2) repli : voix
+        Windows (SAPI) hors ligne."""
+        import urllib.parse
+        import urllib.request
+        lang = {"es": "es", "en": "en", "fr": "fr", "de": "de",
+                "pt": "pt", "it": "it"}.get(self.langue, "en")
+        chunks, cur = [], ""
+        for sent in re.split(r"(?<=[.!?])\s+", text.strip()):
+            if cur and len(cur) + len(sent) + 1 > 170:
+                chunks.append(cur)
+                cur = sent
+            else:
+                cur = (cur + " " + sent).strip()
+        if cur:
+            chunks.append(cur)
+        out = b""
+        try:
+            for ch in chunks:
+                url = ("https://translate.google.com/translate_tts?ie=UTF-8"
+                       f"&client=tw-ob&tl={lang}&q="
+                       + urllib.parse.quote(ch[:190]))
+                req = urllib.request.Request(
+                    url, headers={"User-Agent": "Mozilla/5.0"})
+                data = urllib.request.urlopen(req, timeout=15).read()
+                if len(data) < 800:
+                    raise ValueError("audio vide")
+                out += data
+            if out:
+                print(f"   🗣️ Voix de synthèse prête (Google, "
+                      f"{len(out) // 1024} Ko)")
+                return out
+        except Exception as e:  # noqa: BLE001
+            print(f"   ⚠️ Synthèse vocale Google : {str(e)[:60]} → voix "
+                  f"Windows")
+        # Repli : System.Speech (Windows), sans connexion
+        try:
+            import subprocess
+            import tempfile
+            wav = os.path.join(tempfile.gettempdir(), "bot_tts.wav")
+            txt = os.path.join(tempfile.gettempdir(), "bot_tts.txt")
+            with open(txt, "w", encoding="utf-8") as f:
+                f.write(text)
+            ps = (
+                "Add-Type -AssemblyName System.Speech;"
+                "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer;"
+                f"$v = $s.GetInstalledVoices() | ? {{ $_.VoiceInfo.Culture"
+                f".TwoLetterISOLanguageName -eq '{lang}' }} | select -First 1;"
+                "if ($v) { $s.SelectVoice($v.VoiceInfo.Name) };"
+                f"$s.SetOutputToWaveFile('{wav}');"
+                f"$s.Speak([IO.File]::ReadAllText('{txt}',"
+                "[Text.Encoding]::UTF8));$s.Dispose()"
+            )
+            subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                           timeout=60, capture_output=True,
+                           creationflags=getattr(
+                               subprocess, "CREATE_NO_WINDOW", 0))
+            with open(wav, "rb") as f:
+                data = f.read()
+            if len(data) > 2000:
+                print(f"   🗣️ Voix Windows prête ({len(data) // 1024} Ko)")
+                return data
+        except Exception as e:  # noqa: BLE001
+            print(f"   ⚠️ Voix Windows indisponible : {str(e)[:60]}")
+        return b""
+
+    def _compose_spoken_answer(self) -> str:
+        """Réponse orale (≈ 2 phrases) à la question de la page, fondée
+        sur le transcript / texte de la leçon et le vocabulaire."""
+        page = self._get_page_text()[:1500]
+        vocab = self._activity_vocab()[:60]
+        prompt = (
+            f"Tu es un étudiant de niveau C1 en {self.lang_name}. Une "
+            f"question orale est posée sur la page ; tu y réponds À VOIX "
+            f"HAUTE.\n\n{self._build_lesson_texts_block()}"
+            f"PAGE :\n{page}\n\n"
+            f"VOCABULAIRE de l'activité (onglet « vocabulary ») : "
+            f"{', '.join(vocab) if vocab else '(non disponible)'}\n\n"
+            "CONSIGNE : réponds directement à la question en "
+            f"{self.lang_name}, en 2 phrases courtes (30 à 40 mots, 190 "
+            "caractères MAXIMUM au total). Appuie-toi sur le transcript / "
+            "le texte de la leçon s'il en parle. Si la consigne demande "
+            "d'utiliser des mots du vocabulaire, emploie-en AU MOINS TROIS "
+            "de la liste, EXACTEMENT tels quels. Phrases naturelles, sans "
+            "émoji, sans guillemets.\n"
+            'JSON uniquement : {"reponse": "..."}'
+        )
+        raw = self._call_gemini(prompt, None, max_retries=3,
+                                temperature=0.3)
+        if not raw:
+            return ""
+        data = self._extract_json(raw) or {}
+        ans = str(data.get("reponse") or "").strip()
+        if not ans:
+            m = re.search(r'"reponse"\s*:\s*"([^"]+)', raw)
+            ans = m.group(1).strip() if m else ""
+        return re.sub(r"\s+", " ", ans)[:260]
+
+    def _handle_open_speaking(self) -> bool:
+        """Traite l'oral libre. True = géré (le cycle continue)."""
+        btn = self._open_recorder_button()
+        if btn is None:
+            return False
+        try:
+            sig = (self._get_page_text() or "")[:300]
+        except Exception:  # noqa: BLE001
+            sig = ""
+        if sig != getattr(self, "_open_speak_sig", None):
+            self._open_speak_sig = sig
+            self._open_speak_tries = 0
+            self._dump_speaking_page(tag="oral_libre")
+        self._open_speak_tries = getattr(self, "_open_speak_tries", 0) + 1
+        print("   🎤 Oral libre (réponse notée par IA) détecté"
+              + ("" if self._open_speak_tries == 1
+                 else f" [essai {self._open_speak_tries}]"))
+        if self._open_speak_tries > 2:
+            print("   ⚠️ Oral libre bloqué → Skip")
+            self._open_speak_tries = 0
+            if self._click_skip_button() or self._click_progression_button():
+                time.sleep(2)
+                return True
+            return False
+
+        # 1) PRIORITÉ : le transcript / texte de la page est récolté
+        #    AVANT de répondre (la réponse s'en sert).
+        try:
+            self._harvest_page_texts()
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 2) micro factice actif sur la page (rechargement 1×, comme la
+        #    prononciation)
+        self._install_fake_speech()
+        try:
+            early = bool(self.driver.execute_script(
+                "return !!window.__botEarly;"))
+        except WebDriverException:
+            early = True
+        if not early and not getattr(self, "_speak_reloaded", False):
+            self._speak_reloaded = True
+            print("   🔄 Micro factice pas encore actif → rechargement")
+            try:
+                self.driver.refresh()
+                time.sleep(5)
+                self._activate_page()
+                self._harvest_page_texts()
+            except WebDriverException:
+                pass
+            btn = self._open_recorder_button()
+            if btn is None:
+                return True
+
+        # 3) rédiger la réponse + la convertir en voix
+        answer = self._compose_spoken_answer()
+        if not answer:
+            print("   ⚠️ Pas de réponse générée pour l'oral libre")
+            return False
+        print(f"   🗣️ Réponse orale : « {answer} »")
+        audio = self._tts_audio(answer)
+        if not audio:
+            print("   ⚠️ Aucune voix de synthèse disponible → Skip")
+            self._click_skip_button()
+            return True
+        b64 = base64.b64encode(audio).decode("ascii")
+        try:
+            self.driver.execute_script(
+                "window.__botVoiceB64 = arguments[0];"
+                "window.__botVoiceDur = 0; window.__botGumCalls = 0;", b64)
+        except WebDriverException:
+            return False
+
+        # 4) « Start » : 3 façons de cliquer tant que le micro n'est pas
+        #    ouvert par le site
+        self._activate_page()
+        dur, calls = 0.0, 0
+        for attempt in range(3):
+            fresh = self._open_recorder_button()
+            if fresh is not None:
+                btn = fresh
+            if attempt == 0:
+                if not self._cdp_click(btn):
+                    self._ghost_click(btn)
+            elif attempt == 1:
+                self._ghost_click(btn)
+            else:
+                try:
+                    self.driver.execute_script("arguments[0].click();", btn)
+                except WebDriverException:
+                    pass
+            for _ in range(10):
+                time.sleep(0.5)
+                try:
+                    d = self.driver.execute_script(
+                        "return {c: window.__botGumCalls || 0,"
+                        " d: window.__botVoiceDur || 0,"
+                        " e: window.__botGumErr || ''};") or {}
+                except WebDriverException:
+                    d = {}
+                calls, dur = d.get("c", 0), d.get("d", 0)
+                if calls or d.get("e"):
+                    break
+                if self._recording_ui_visible() or \
+                        self._open_recorder_button() is None:
+                    # le site enregistre déjà : on joue la voix dedans
+                    try:
+                        dur = self.driver.execute_async_script(
+                            "const done = arguments[arguments.length-1];"
+                            "(window.__botPlayVoice ? window.__botPlayVoice()"
+                            " : Promise.resolve(0)).then(done)"
+                            ".catch(e => done(0));") or 0
+                    except WebDriverException:
+                        dur = 0
+                    if dur:
+                        calls = 1
+                        break
+            if calls:
+                break
+        if not calls:
+            print("   ⚠️ Le site n'a pas ouvert le micro (oral libre)")
+            self._dump_speaking_page(tag="oral_libre_echec")
+            self._click_stop_recording()
+            return False
+        print(f"   🎙️ Réponse dite ({float(dur or 0):.1f} s)")
+        time.sleep(max(1.5, float(dur or 0) + 1.2))
+        self._dump_speaking_page(tag="oral_libre_enregistrement")
+
+        # 5) arrêter l'enregistrement (carré / même bouton)
+        stopped = self._click_stop_recording()
+        if not stopped:
+            try:
+                rb = self.driver.execute_script("""
+                    const vis = e => { const r = e.getBoundingClientRect();
+                                       return r.width > 0 && r.height > 0; };
+                    return [...document.querySelectorAll(
+                        '[data-testid="recorder-action-button"]')].find(vis)
+                        || null;""")
+            except WebDriverException:
+                rb = None
+            if rb is not None:
+                self._ghost_click(rb)
+                stopped = True
+        time.sleep(2.0)
+
+        # 6) l'IA du site note : on attend, puis Validate / suite
+        for _ in range(12):
+            if self._click_validation():
+                break
+            time.sleep(1.5)
+        time.sleep(2.0)
+        for _ in range(10):
+            if self._click_progression_button():
+                print("   ➡️  Oral libre terminé → suivant")
+                break
+            time.sleep(1.5)
+        self._open_speak_tries = 0
+        self.memory_context = ""
+        return True
+
     def _is_speaking_screen(self) -> bool:
         """Écran « Listen to the audio and repeat the word » : lien « I
         can't talk right now » OU bouton micro « Pronounce » visible."""
@@ -9778,6 +10066,9 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                                    return r.width > 0 && r.height > 0; };
                 if ([...document.querySelectorAll(
                         '[data-role="skip-speak-part"]')].some(vis)) return true;
+                if ([...document.querySelectorAll(
+                        '[data-testid="recorder-action-button"]')]
+                        .some(b => vis(b))) return true;
                 return [...document.querySelectorAll(
                         'button svg[data-icon="microphone"]')]
                     .some(s => vis(s.closest('button')));
@@ -10052,6 +10343,14 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                 self._stop_attempts = 0
         except WebDriverException:
             pass
+
+        # ── ORAL LIBRE (bouton « Start », réponse notée par IA) ─────────
+        if SPEAK_MODE:
+            try:
+                if self._open_recorder_button() is not None:
+                    return self._handle_open_speaking()
+            except WebDriverException:
+                pass
 
         try:
             skip_speak = [e for e in self.driver.find_elements(
