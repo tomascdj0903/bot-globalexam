@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.02.1"
+BOT_VERSION = "2026.11.02.2"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -7016,6 +7016,16 @@ transcript→{{"type":"transcript","transcript_action":true}}"""
         if t == "transcript" or result.get("transcript_action"):
             return {"transcript_action": True}
 
+        if t == "navigation" and SPEAK_MODE and self._oral_pending_in_source():
+            # Page ORALE pas encore répondue (« Graded by AI » dans le code
+            # de la page) : « Next » ferait « Finish » sans enregistrement
+            # (bug observé après un Auto-Refresh). On ne clique RIEN : le
+            # module oral la traitera au cycle suivant.
+            print("   🛑 L'IA propose « Next » sur une page orale non "
+                  "répondue → ignoré (module oral)")
+            time.sleep(2)
+            return None
+
         if t == "navigation":
             # PROTECTION : normalement si le stock n'est pas vide, ce
             # n'est pas une navigation. MAIS sur les pages de feedback
@@ -9861,6 +9871,20 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         }
         return null;
     """
+
+    def _oral_pending_in_source(self) -> bool:
+        """Version « code de la page » (sans dépendre de ce qui est
+        affiché) : badge Graded by AI / enregistreur présents et aucune
+        trace de réponse déjà envoyée."""
+        try:
+            src = self.driver.page_source or ""
+            body = self.driver.execute_script(
+                "return document.body.innerText || '';") or ""
+        except WebDriverException:
+            return False
+        if not ('ai-modal-button' in src or 'recorder-action-button' in src):
+            return False
+        return not re.search(r"You have not submitted|Your responses", body)
 
     def _is_ai_oral_page(self) -> bool:
         """Exercice oral noté par IA : badge « Graded by AI » visible ET
