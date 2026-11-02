@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.02.3"
+BOT_VERSION = "2026.11.02.4"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -2186,7 +2186,16 @@ class HybridBot:
             pending = self._has_pending_exercise()
         except Exception:
             pending = False
-        # Page orale (Start / Graded by AI) : jamais de refresh dessus
+        # Page orale (Start / Graded by AI) : jamais de refresh dessus.
+        # La page vient peut-être d'être ouverte (clic Next) et n'est pas
+        # encore affichée : on lui laisse 4 s avant de juger (bug : refresh
+        # immédiat sur l'oral → oral raté, « Finish » sans enregistrement).
+        if not pending:
+            time.sleep(4)
+            try:
+                pending = self._has_pending_exercise()
+            except Exception:  # noqa: BLE001
+                pending = False
         if not pending:
             try:
                 pending = (self._open_recorder_button() is not None
@@ -7043,6 +7052,19 @@ transcript→{{"type":"transcript","transcript_action":true}}"""
             return {"special": "CAROUSEL"}
         if t == "transcript" or result.get("transcript_action"):
             return {"transcript_action": True}
+
+        if t == "navigation":
+            try:
+                _u = self.driver.current_url or ""
+            except WebDriverException:
+                _u = ""
+            if "/correction" not in _u and getattr(
+                    self, "_nav_dumps", 0) < 3:
+                # DIAGNOSTIC : « Next » proposé hors page de correction →
+                # on garde le HTML (pour repérer un exo non reconnu).
+                self._nav_dumps = getattr(self, "_nav_dumps", 0) + 1
+                self._speak_dumps = min(getattr(self, "_speak_dumps", 0), 3)
+                self._dump_speaking_page("navigation_ia")
 
         if t == "navigation" and SPEAK_MODE and self._oral_pending_in_source():
             # Page ORALE pas encore répondue (« Graded by AI » dans le code
