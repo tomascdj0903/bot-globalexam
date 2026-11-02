@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.02.6"
+BOT_VERSION = "2026.11.02.7"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -2193,6 +2193,16 @@ class HybridBot:
         # La page vient peut-être d'être ouverte (clic Next) et n'est pas
         # encore affichée : on lui laisse 4 s avant de juger (bug : refresh
         # immédiat sur l'oral → oral raté, « Finish » sans enregistrement).
+        # Point « sûr » uniquement : page de correction ou hors activité.
+        # Sur une page d'exercice tout juste ouverte (ex. oral), le refresh
+        # faisait rater l'oral (« Finish » sans enregistrement, 3×).
+        if not pending:
+            try:
+                _u = self.driver.current_url or ""
+            except WebDriverException:
+                _u = ""
+            if "/activity/" in _u and "/correction" not in _u:
+                pending = True
         if not pending:
             time.sleep(4)
             try:
@@ -7069,6 +7079,9 @@ transcript→{{"type":"transcript","transcript_action":true}}"""
                 self._speak_dumps = min(getattr(self, "_speak_dumps", 0), 3)
                 self._dump_speaking_page("navigation_ia")
 
+        if t == "navigation" and self._suspicious_navigation():
+            return None
+
         if t == "navigation" and SPEAK_MODE and self._oral_pending_in_source():
             # Page ORALE pas encore répondue (« Graded by AI » dans le code
             # de la page) : « Next » ferait « Finish » sans enregistrement
@@ -9924,6 +9937,54 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         }
         return null;
     """
+
+    def _suspicious_navigation(self) -> bool:
+        """L'IA propose « Next » sur une page d'exercice (pas une
+        correction) qui n'a AUCUN bouton Next/Continue visible, seulement
+        « Finish » → cliquer Finish enverrait l'exercice vide (oral raté
+        3× après un rechargement). On garde la page (diagnostic) et on
+        recharge une fois au lieu de valider."""
+        try:
+            u = self.driver.current_url or ""
+            if "/activity/" not in u or "/correction" in u:
+                return False
+            info = self.driver.execute_script("""
+                const vis = e => { const r = e.getBoundingClientRect();
+                                   return r.width > 0 && r.height > 0; };
+                let nav = false, fin = false;
+                for (const b of document.querySelectorAll('button, a, [role=button]')) {
+                    if (!vis(b)) continue;
+                    const t = (b.innerText || '').trim();
+                    if (/^(next|continue|suivant|continuer|start|commencer|let.?s go|begin|move on to the next.*)$/i.test(t)) nav = true;
+                    if (/^(finish|terminer)$/i.test(t)) fin = true;
+                }
+                return {nav: nav, fin: fin,
+                        media: !!document.querySelector('[data-testid="media-play"], audio, video')};
+            """) or {}
+        except WebDriverException:
+            return False
+        if info.get("nav") or not info.get("fin"):
+            return False
+        n = getattr(self, "_susp_nav", {})
+        self._susp_nav = n
+        k = n.get(u, 0) + 1
+        n[u] = k
+        if k == 1:
+            saved = getattr(self, "_speak_dumps", 0)
+            self._speak_dumps = 0
+            self._dump_speaking_page("next_sans_bouton")
+            self._speak_dumps = saved
+        if k <= 2:
+            print("   🛑 « Next » proposé mais seul « Finish » est là (exercice "
+                  "pas fait) → pas de Finish, rechargement de la page")
+            try:
+                self.driver.refresh()
+                time.sleep(6)
+                self._activate_page()
+            except WebDriverException:
+                pass
+            return True
+        return False
 
     def _oral_pending_in_source(self) -> bool:
         """Version « code de la page » (sans dépendre de ce qui est
