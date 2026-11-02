@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.10.30.5"
+BOT_VERSION = "2026.11.02.1"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -2172,6 +2172,13 @@ class HybridBot:
             pending = self._has_pending_exercise()
         except Exception:
             pending = False
+        # Page orale (Start / Graded by AI) : jamais de refresh dessus
+        if not pending:
+            try:
+                pending = (self._open_recorder_button() is not None
+                           or self._is_ai_oral_page())
+            except Exception:  # noqa: BLE001
+                pass
         if pending:
             if not self._refresh_deferred_logged:
                 print("   ⏳ Refresh dû (timer écoulé) → reporté à la fin "
@@ -9855,6 +9862,32 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         return null;
     """
 
+    def _is_ai_oral_page(self) -> bool:
+        """Exercice oral noté par IA : badge « Graded by AI » visible ET
+        pas encore de réponse (pas de « Your responses » / correction)."""
+        try:
+            return bool(self.driver.execute_script("""
+                const vis = e => { const r = e.getBoundingClientRect();
+                                   return r.width > 0 && r.height > 0; };
+                const ai = [...document.querySelectorAll(
+                    '[data-testid="ai-modal-button"]')].some(vis)
+                    || [...document.querySelectorAll('button, span')].some(
+                        e => vis(e) && /^graded by ai$/i.test(
+                            (e.innerText || '').trim()));
+                if (!ai) return false;
+                const body = document.body.innerText || '';
+                if (/You have not submitted|Your responses/i
+                        .test(body)) return false;
+                const rec = [...document.querySelectorAll(
+                    '[data-testid="recorder-action-button"]')].find(vis);
+                if (rec && /stop|restart|retry/i.test(
+                        (rec.getAttribute('aria-label') || '') + ' '
+                        + (rec.innerText || ''))) return false;
+                return true;
+            """))
+        except WebDriverException:
+            return False
+
     def _open_recorder_button(self):
         try:
             return self.driver.execute_script(self._JS_OPEN_RECORDER)
@@ -10289,6 +10322,11 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                 if ([...document.querySelectorAll(
                         '[data-testid="recorder-action-button"]')]
                         .some(b => vis(b))) return true;
+                if ([...document.querySelectorAll(
+                        '[data-testid="ai-modal-button"]')]
+                        .some(b => vis(b))
+                    && !/You have not submitted|Your responses/i
+                        .test(document.body.innerText || '')) return true;
                 return [...document.querySelectorAll(
                         'button svg[data-icon="microphone"]')]
                     .some(s => vis(s.closest('button')));
@@ -10569,6 +10607,29 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
             try:
                 if self._open_recorder_button() is not None:
                     return self._handle_open_speaking()
+                if self._is_ai_oral_page():
+                    # Page orale (badge « Graded by AI ») mais bouton
+                    # « Start » pas encore affiché (page rechargée, lente…)
+                    # → on l'attend ; JAMAIS l'IA (elle cliquait Next puis
+                    # Finish → « You have not submitted a response »).
+                    for _ in range(25):
+                        time.sleep(0.6)
+                        if self._open_recorder_button() is not None:
+                            return self._handle_open_speaking()
+                    n = getattr(self, "_oral_wait_hits", 0) + 1
+                    self._oral_wait_hits = n
+                    if n <= 3:
+                        print("   ⏳ Page orale : bouton « Start » pas encore "
+                              "là → rechargement de la page")
+                        try:
+                            self.driver.refresh()
+                            time.sleep(6)
+                            self._activate_page()
+                        except WebDriverException:
+                            pass
+                        return True
+                else:
+                    self._oral_wait_hits = 0
             except WebDriverException:
                 pass
 
