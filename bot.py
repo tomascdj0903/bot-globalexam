@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.02.2"
+BOT_VERSION = "2026.11.02.3"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -139,6 +139,20 @@ JS_FAKE_SPEECH = r"""
 (function () {
   if (window.__botFakeSR) return;
   window.__botFakeSR = true;
+  // Après un rechargement, le site demande l'état de la permission micro
+  // (« Activate your microphone » au lieu de « Start ») → toujours accordée.
+  try {
+    const P = navigator.permissions;
+    if (P && P.query && !P.__botPatched) {
+      const q = P.query.bind(P);
+      P.query = d => (d && /microphone|audio/i.test(String(d.name)))
+        ? Promise.resolve({state: 'granted', status: 'granted',
+                           onchange: null, addEventListener() {},
+                           removeEventListener() {}})
+        : q(d);
+      P.__botPatched = true;
+    }
+  } catch (e) {}
   class FakeSR extends EventTarget {
     constructor() {
       super();
@@ -2176,7 +2190,8 @@ class HybridBot:
         if not pending:
             try:
                 pending = (self._open_recorder_button() is not None
-                           or self._is_ai_oral_page())
+                           or self._is_ai_oral_page()
+                           or self._free_answer_pending())
             except Exception:  # noqa: BLE001
                 pass
         if pending:
@@ -6550,6 +6565,19 @@ Réponds UNIQUEMENT en JSON :
             visible_radio_labels = []
             nb_radio_labels = 0
 
+        # Options « A / B / C / D » qui sont des BOUTONS RADIO : c'est un
+        # QCM (une lettre = une option du transcript), pas un anagramme
+        # (bug : le solveur avait « trouvé » ABCD et coché les 4 radios).
+        if is_letter_anagram and nb_dz == 0 and nb_radio_labels >= max(
+                2, int(len(options) * 0.8)):
+            _lk = {str(o).strip().lower() for o in options}
+            if sum(1 for t in visible_radio_labels
+                   if str(t).strip().lower() in _lk) >= max(
+                        2, int(len(options) * 0.8)):
+                print("   📻 Lettres = étiquettes de boutons radio → QCM "
+                      "(pas un anagramme)")
+                is_letter_anagram = False
+
         is_radio_qcm = (
             not is_image_choice
             and not is_letter_anagram
@@ -9862,7 +9890,7 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         if ([...document.querySelectorAll(
                 '[data-role="skip-speak-part"]')].some(vis)) return null;
         for (const b of document.querySelectorAll(
-                '[data-testid="recorder-action-button"]')) {
+                '[data-testid="recorder-action-button"], #playPauseButton')) {
             if (!vis(b)) continue;
             const t = (b.innerText || '').trim();
             if (/pronounce|prononc/i.test(t)) continue;
@@ -9882,9 +9910,49 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                 "return document.body.innerText || '';") or ""
         except WebDriverException:
             return False
-        if not ('ai-modal-button' in src or 'recorder-action-button' in src):
+        if not ('ai-modal-button' in src or 'recorder-action-button' in src
+                or 'playPauseButton' in src or 'Graded by AI' in src
+                or self._free_answer_pending()):
             return False
         return not re.search(r"You have not submitted|Your responses", body)
+
+    _JS_FREE_PENDING = r"""
+        // Réponse libre pas encore envoyée : bouton « See suggestion »
+        // visible (jamais sur la correction), pas de champ de saisie.
+        const vis = e => { const r = e.getBoundingClientRect();
+                           return r.width > 0 && r.height > 0; };
+        const body = document.body.innerText || '';
+        if (/You have not submitted|Your responses/i.test(body)) return false;
+        if ([...document.querySelectorAll('textarea, [contenteditable=true]')]
+                .some(vis)) return false;
+        return [...document.querySelectorAll('button, [role=button]')].some(
+            b => vis(b) && /^(see|show|voir( la)?) suggestion$/i.test(
+                (b.innerText || '').trim()));
+    """
+
+    def _free_answer_pending(self) -> bool:
+        try:
+            return bool(self.driver.execute_script(self._JS_FREE_PENDING))
+        except WebDriverException:
+            return False
+
+    def _click_mic_activation(self) -> bool:
+        """Bouton « Activate your microphone » (affiché à la place de
+        « Start » quand le site croit le micro non autorisé)."""
+        try:
+            return bool(self.driver.execute_script("""
+                const vis = e => { const r = e.getBoundingClientRect();
+                                   return r.width > 0 && r.height > 0; };
+                for (const b of document.querySelectorAll('button, [role=button], a')) {
+                    const t = ((b.innerText || '') + ' ' +
+                               (b.getAttribute('aria-label') || '')).trim();
+                    if (vis(b) && /(activate|turn on|enable|allow).{0,12}micro|activ\\w* .{0,10}micro|autoris\\w* .{0,10}micro/i.test(t)) {
+                        b.click(); return true; }
+                }
+                return false;
+            """))
+        except WebDriverException:
+            return False
 
     def _is_ai_oral_page(self) -> bool:
         """Exercice oral noté par IA : badge « Graded by AI » visible ET
@@ -10631,7 +10699,12 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
             try:
                 if self._open_recorder_button() is not None:
                     return self._handle_open_speaking()
-                if self._is_ai_oral_page():
+                if self._is_ai_oral_page() or self._free_answer_pending():
+                    if self._click_mic_activation():
+                        print("   🎙️ « Activate your microphone » cliqué")
+                        time.sleep(2)
+                    if getattr(self, "_oral_wait_hits", 0) == 0:
+                        self._dump_speaking_page("oral_sans_start")
                     # Page orale (badge « Graded by AI ») mais bouton
                     # « Start » pas encore affiché (page rechargée, lente…)
                     # → on l'attend ; JAMAIS l'IA (elle cliquait Next puis
