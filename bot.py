@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.02.4"
+BOT_VERSION = "2026.11.02.5"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -284,7 +284,10 @@ JS_FAKE_SPEECH = r"""
           window.__botGumEntered = (window.__botGumEntered || 0) + 1;
           return (async () => {
             const stream = window.__botMicStream();
-            if (window.__botVoiceB64) await window.__botPlayVoice();
+            // Oral libre : le bot joue la voix LUI-MÊME une fois
+            // l'enregistrement vraiment lancé (__botVoiceDeferred).
+            if (window.__botVoiceB64 && !window.__botVoiceDeferred)
+                await window.__botPlayVoice();
             return stream;
           })().catch(e => { window.__botGumErr = String(e && (e.name + ': '
                               + e.message)); throw e; });
@@ -10344,46 +10347,64 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
             return True
 
         self._activate_page()
-        dur, calls, recording = 0.0, 0, False
+        # La voix ne part PAS à l'ouverture du micro (le site l'ouvre parfois
+        # avant que l'enregistrement tourne → voix perdue, « Stop » aussitôt).
+        # On attend que le bouton affiche « Stop », PUIS on joue la voix et
+        # on attend qu'elle soit finie.
+        try:
+            self.driver.execute_script("window.__botVoiceDeferred = true;")
+        except WebDriverException:
+            pass
+        recording = False
         for attempt in range(2):
             st = rec_state()
+            if st.get("lbl") == "stop":
+                recording = True
+                break
             if st.get("lbl") != "start":
-                break                      # déjà en cours / pas de Start
+                break
             click_rec()
             t0 = time.time()
-            while time.time() - t0 < 12:   # le site peut mettre ~10 s
+            while time.time() - t0 < 15:   # le site peut mettre ~10 s
                 time.sleep(0.4)
-                st = rec_state()
-                calls, dur = st.get("calls", 0), st.get("dur", 0)
-                if st.get("lbl") == "stop":
+                if rec_state().get("lbl") == "stop":
                     recording = True
-                    if calls:
-                        break
-                if calls:
                     break
-            if recording or calls:
+            if recording:
                 break
             print("   🔁 Le bouton n'est pas passé sur « Stop » → nouvel essai")
-        if recording and not calls:
-            # Micro ouvert par le site plus tôt : on joue la voix dedans
+        if not recording:
             try:
-                dur = self.driver.execute_async_script(
-                    "const done = arguments[arguments.length-1];"
-                    "(window.__botPlayVoice ? window.__botPlayVoice()"
-                    " : Promise.resolve(0)).then(done)"
-                    ".catch(e => done(0));") or 0
+                self.driver.execute_script("window.__botVoiceDeferred = false;")
             except WebDriverException:
-                dur = 0
-            calls = 1 if dur else 0
-        if not calls:
-            print("   ⚠️ Le site n'a pas ouvert le micro (oral libre)")
+                pass
+            print("   ⚠️ L'enregistrement n'a pas démarré (oral libre)")
             self._dump_speaking_page(tag="oral_libre_echec")
-            if rec_state().get("lbl") == "stop":
-                click_rec()
             return False
-        print(f"   🎙️ Réponse dite ({float(dur or 0):.1f} s)")
-        # attendre la fin de la voix (+ marge), le bouton doit rester « Stop »
-        time.sleep(max(1.5, float(dur or 0) + 1.5))
+        time.sleep(1.0)                    # micro du site bien ouvert
+        try:
+            dur = self.driver.execute_async_script(
+                "const done = arguments[arguments.length-1];"
+                "(window.__botPlayVoice ? window.__botPlayVoice()"
+                " : Promise.resolve(0)).then(done)"
+                ".catch(e => done(0));") or 0
+            ctx_state = self.driver.execute_script(
+                "return window.__botCtxState || '';") or ""
+        except WebDriverException:
+            dur, ctx_state = 0, ""
+        if not dur:
+            print("   ⚠️ Voix non jouée dans le micro")
+        t_play = time.time()
+        print(f"   🎙️ Réponse en cours ({float(dur or 0):.1f} s"
+              f"{', audio ' + ctx_state if ctx_state and ctx_state != 'running' else ''})")
+        # attendre la FIN de la voix (+ marge) ; le bouton doit rester « Stop »
+        while time.time() - t_play < float(dur or 0) + 2.0:
+            time.sleep(0.5)
+        print("   ✅ Réponse dite en entier")
+        try:   # la page reste la même (site monopage) → on remet à zéro
+            self.driver.execute_script("window.__botVoiceDeferred = false;")
+        except WebDriverException:
+            pass
         self._dump_speaking_page(tag="oral_libre_enregistrement")
 
         # 5) arrêter : clic sur « Stop » UNIQUEMENT s'il affiche « Stop »,
