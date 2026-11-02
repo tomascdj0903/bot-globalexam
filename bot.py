@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.02.5"
+BOT_VERSION = "2026.11.02.6"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -10397,8 +10397,8 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         t_play = time.time()
         print(f"   🎙️ Réponse en cours ({float(dur or 0):.1f} s"
               f"{', audio ' + ctx_state if ctx_state and ctx_state != 'running' else ''})")
-        # attendre la FIN de la voix (+ marge) ; le bouton doit rester « Stop »
-        while time.time() - t_play < float(dur or 0) + 2.0:
+        # attendre la FIN de la voix + 5 s ; le bouton doit rester « Stop »
+        while time.time() - t_play < float(dur or 0) + 5.0:
             time.sleep(0.5)
         print("   ✅ Réponse dite en entier")
         try:   # la page reste la même (site monopage) → on remet à zéro
