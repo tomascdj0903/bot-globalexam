@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.02.7"
+BOT_VERSION = "2026.11.04.1"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -2853,6 +2853,19 @@ class HybridBot:
         self._ghost_click(btn)
 
         transcript = self._extract_transcript_text(before)
+        if not transcript:
+            # Panneau lent à charger (QCM « A/B/C/D » dont les options sont
+            # DANS le transcript → l'IA répondait au hasard) : 2e lecture.
+            time.sleep(2.5)
+            transcript = self._extract_transcript_text(before)
+            if not transcript:
+                try:   # bouton pas pris : on réessaie le clic une fois
+                    btn2 = self._find_transcript_button()
+                    if btn2:
+                        self._ghost_click(btn2)
+                        transcript = self._extract_transcript_text(before)
+                except WebDriverException:
+                    pass
         if transcript:
             self._remember_text(transcript, "TRANSCRIPT")
             preview = transcript[:120].replace("\n", " ")
@@ -7079,6 +7092,14 @@ transcript→{{"type":"transcript","transcript_action":true}}"""
                 self._speak_dumps = min(getattr(self, "_speak_dumps", 0), 3)
                 self._dump_speaking_page("navigation_ia")
 
+        if t == "navigation" and SPEAK_MODE and self._wait_oral_markers():
+            # Oral pas encore affiché au moment de l'analyse (page qui finit
+            # de charger) : l'IA voyait une page vide → « Next » → Finish
+            # → oral envoyé vide (bug répété sur les dernières questions).
+            print("   🛑 « Next » proposé mais c'est un ORAL (affiché après "
+                  "coup) → ignoré, module oral")
+            return None
+
         if t == "navigation" and self._suspicious_navigation():
             return None
 
@@ -9938,6 +9959,38 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         return null;
     """
 
+    def _oral_marker_now(self) -> bool:
+        try:
+            if (self._open_recorder_button() is not None
+                    or self._is_ai_oral_page() or self._free_answer_pending()):
+                return True
+            src = self.driver.page_source or ""
+            body = self.driver.execute_script(
+                "return document.body.innerText || '';") or ""
+        except WebDriverException:
+            return False
+        return (("recorder-action-button" in src or "ai-modal-button" in src)
+                and not re.search(r"You have not submitted|Your responses",
+                                  body))
+
+    def _wait_oral_markers(self, total: float = 8.0) -> bool:
+        """Sur une page d'exercice (pas une correction), attend jusqu'à
+        `total` s qu'un oral apparaisse (Start / Graded by AI / See
+        suggestion)."""
+        try:
+            u = self.driver.current_url or ""
+        except WebDriverException:
+            return False
+        if "/activity/" not in u or "/correction" in u:
+            return False
+        t0 = time.time()
+        while True:
+            if self._oral_marker_now():
+                return True
+            if time.time() - t0 > total:
+                return False
+            time.sleep(0.8)
+
     def _suspicious_navigation(self) -> bool:
         """L'IA propose « Next » sur une page d'exercice (pas une
         correction) qui n'a AUCUN bouton Next/Continue visible, seulement
@@ -12037,6 +12090,11 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         seen_ids: set[int] = set()
         for lb in ("Validate", "Valider", "Submit",
                    "Finish", "Terminer", "Vérifier", "Check"):
+            # Après un plan « Next » (navigation), « Finish » enverrait
+            # l'exercice en cours VIDE (oral raté) → jamais.
+            if lb in ("Finish", "Terminer") and getattr(
+                    self, "_no_finish_validation", False):
+                continue
             try:
                 xp = (
                     f"//*[contains(translate(text(), "
@@ -12066,6 +12124,9 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                 "button[class*='primary'], a[class*='primary']",
             )
             for btn in primaries:
+                if getattr(self, "_no_finish_validation", False) and \
+                        re.search(r"finish|termin", safe_text(btn), re.I):
+                    continue
                 if self._is_valid_validate_button(btn):
                     print(f"   🖱️  Validation (fallback primary) : "
                           f"'{safe_text(btn)[:40]}'")
@@ -12950,6 +13011,22 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                         print(f"   🔢 Ordre corrigé d'après les tuiles du "
                               f"site : {_ido} (l'IA proposait {expanded})")
                         expanded = _ido
+                    # Association (drag) : l'IA met parfois l'INTITULÉ d'une
+                    # zone (« every cloud has a silver lining ») au lieu de
+                    # l'étiquette. S'il ne manque qu'UNE étiquette, on la
+                    # remet à cette place (sinon drag raté + tout décalé).
+                    if _etype in ("drag_drop", "matching") and code_options:
+                        _norm = lambda x: re.sub(r"\s+", " ", str(x)).strip().lower()
+                        _stock = [str(o) for o in code_options if str(o).strip()]
+                        _sk = {_norm(o): o for o in _stock}
+                        _bad = [i for i, a in enumerate(expanded)
+                                if _norm(a) not in _sk]
+                        _unused = [o for o in _stock if _norm(o) not in
+                                   {_norm(a) for a in expanded}]
+                        if len(_bad) == 1 and len(_unused) == 1:
+                            print(f"   🔧 « {expanded[_bad[0]]} » n'est pas une "
+                                  f"étiquette → remplacé par « {_unused[0]} »")
+                            expanded[_bad[0]] = _unused[0]
                     print(f"\n   📋 PLAN FINAL : {expanded}\n")
                     # Plan = juste quitter la page (Next/Continue…) : on
                     # récolte d'abord les textes et le transcript éventuels.
@@ -12982,7 +13059,20 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                               f"({report['succeeded']}/{report['total']}) "
                               f"→ validation")
                         self._last_report = report
-                        self._click_validation()
+                        _nav_plan = (str(res.get("type") or res.get("exercise_type") or "") == "navigation"
+                                     and not any(re.search(r"finish|termin",
+                                                           str(a), re.I)
+                                                 for a in expanded))
+                        if _nav_plan and SPEAK_MODE and self._oral_marker_now():
+                            print("   🛑 Oral affiché après « Next » → pas de "
+                                  "validation, module oral")
+                            self._reset_state()
+                            continue
+                        self._no_finish_validation = _nav_plan
+                        try:
+                            self._click_validation()
+                        finally:
+                            self._no_finish_validation = False
                         time.sleep(1.8)
 
                         # ── CLIC POST-VALIDATION : Finish / Next / Move on ──
