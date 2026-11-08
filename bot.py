@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.04.1"
+BOT_VERSION = "2026.11.08.1"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -89,6 +89,10 @@ MODEL_VERIF_QCM  = "gemini-2.5-flash-lite"
 # en cas de désaccord, l'arbitrage aussi → jamais de réponse Flash-Lite
 # seule. Mettre False pour revenir au tout-Flash.
 LITE_FOR_EASY = True
+# Niveau de réflexion demandé aux modèles Gemini 3.x via l'API REST
+# (clés AQ.) : "minimal" | "low" | "medium" | "high". Par défaut Google
+# met "minimal" (aucune réflexion) → erreurs sur les exos piégeux.
+THINKING_LEVEL = "low"
 MODEL_EASY = "gemini-2.5-flash-lite"
 
 # Tarifs Gemini (USD par MILLION de tokens) : (entrée, sortie).
@@ -328,6 +332,7 @@ class _RestGemini:
     x-goog-api-key, seule façon acceptée pour les nouvelles clés AQ."""
 
     URL = "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent"
+    _no_thinking: dict = {}      # modèles qui refusent thinkingConfig
 
     def __init__(self, model_name: str, key: str):
         self.model_name = model_name
@@ -354,6 +359,13 @@ class _RestGemini:
             v = getattr(generation_config, k_src, None)
             if v is not None:
                 cfg[k_dst] = v
+        # Gemini 3.x (Flash-Lite) : réflexion « minimal » par défaut =
+        # aucune → erreurs bêtes (mot à placer, vrai/faux). On demande un
+        # peu de réflexion ; si le modèle refuse le paramètre (400), on le
+        # retire pour la suite.
+        if THINKING_LEVEL and str(self.model_name).startswith("gemini-3") \
+                and not _RestGemini._no_thinking.get(self.model_name):
+            cfg["thinkingConfig"] = {"thinkingLevel": THINKING_LEVEL}
         body = {"contents": [{"role": "user", "parts": parts}]}
         if cfg:
             body["generationConfig"] = cfg
@@ -371,7 +383,13 @@ class _RestGemini:
             # Corps COMPLET : le marqueur « PerDay » (quota du jour) est
             # loin dans les détails ; coupé à 300 car. il était perdu et
             # le bot attendait 3×60 s pour rien.
-            raise RuntimeError(f"{he.code} {he.read().decode('utf-8', 'ignore')[:4000]}")
+            err = he.read().decode('utf-8', 'ignore')[:4000]
+            if he.code == 400 and "thinking" in err.lower() and \
+                    "thinkingConfig" in (body.get("generationConfig") or {}):
+                _RestGemini._no_thinking[self.model_name] = True
+                return self.generate_content(content, generation_config,
+                                             request_options=request_options)
+            raise RuntimeError(f"{he.code} {err}")
         text = ""
         for cand in data.get("candidates") or []:
             for prt in (cand.get("content") or {}).get("parts") or []:
@@ -10062,8 +10080,8 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                            return r.width > 0 && r.height > 0; };
         const body = document.body.innerText || '';
         if (/You have not submitted|Your responses/i.test(body)) return false;
-        if ([...document.querySelectorAll('textarea, [contenteditable=true]')]
-                .some(vis)) return false;
+        if ([...document.querySelectorAll('textarea, [contenteditable=true], ' +
+                'input[type=text], input:not([type])')].some(vis)) return false;
         return [...document.querySelectorAll('button, [role=button]')].some(
             b => vis(b) && /^(see|show|voir( la)?) suggestion$/i.test(
                 (b.innerText || '').trim()));
@@ -10106,6 +10124,10 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                         e => vis(e) && /^graded by ai$/i.test(
                             (e.innerText || '').trim()));
                 if (!ai) return false;
+                // Rédaction notée par IA (champ de saisie) ≠ oral
+                if ([...document.querySelectorAll('textarea, [contenteditable=true], ' +
+                        'input[type=text], input:not([type])')].some(vis))
+                    return false;
                 const body = document.body.innerText || '';
                 if (/You have not submitted|Your responses/i
                         .test(body)) return false;
@@ -10341,8 +10363,10 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         print("   🎤 Oral libre (réponse notée par IA) détecté"
               + ("" if self._open_speak_tries == 1
                  else f" [essai {self._open_speak_tries}]"))
-        if self._open_speak_tries > 2:
-            print("   ⚠️ Oral libre bloqué → Skip")
+        if self._open_speak_tries > 5:
+            # Dernier recours seulement (5 essais AVEC rechargement complet
+            # de la page) : avant, 2 essais ratés → Skip → oral à 0 %.
+            print("   ⚠️ Oral libre bloqué après 5 essais → Skip")
             self._open_speak_tries = 0
             if self._click_skip_button() or self._click_progression_button():
                 time.sleep(2)
@@ -10378,8 +10402,11 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                 "return !!window.__botEarly;"))
         except WebDriverException:
             early = True
-        if not early and not getattr(self, "_speak_reloaded", False):
-            self._speak_reloaded = True
+        if not early and getattr(self, "_speak_reloaded_sig", None) != sig:
+            # 1 rechargement PAR PAGE orale (avant : 1 seul par session →
+            # les orals suivants restaient sans micro factice → « Start »
+            # ne démarrait jamais → Skip).
+            self._speak_reloaded_sig = sig
             print("   🔄 Micro factice pas encore actif → rechargement")
             try:
                 self.driver.refresh()
@@ -10492,9 +10519,20 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                 self.driver.execute_script("window.__botVoiceDeferred = false;")
             except WebDriverException:
                 pass
-            print("   ⚠️ L'enregistrement n'a pas démarré (oral libre)")
+            print("   ⚠️ L'enregistrement n'a pas démarré (oral libre) → "
+                  "rechargement complet de la page (micro factice) et "
+                  "nouvel essai")
             self._dump_speaking_page(tag="oral_libre_echec")
-            return False
+            # PAS de retour False : sinon le cycle cliquait un « Restart »
+            # caché (dashboard) qui relançait la série SANS recharger la
+            # page → micro factice absent → échec en boucle → Skip.
+            try:
+                self.driver.refresh()
+                time.sleep(6)
+                self._activate_page()
+            except WebDriverException:
+                pass
+            return True
         time.sleep(1.0)                    # micro du site bien ouvert
         try:
             dur = self.driver.execute_async_script(
@@ -10574,6 +10612,9 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                 if ([...document.querySelectorAll(
                         '[data-testid="ai-modal-button"]')]
                         .some(b => vis(b))
+                    && ![...document.querySelectorAll('textarea, ' +
+                        '[contenteditable=true], input[type=text], ' +
+                        'input:not([type])')].some(vis)
                     && !/You have not submitted|Your responses/i
                         .test(document.body.innerText || '')) return true;
                 return [...document.querySelectorAll(
