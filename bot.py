@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.08.1"
+BOT_VERSION = "2026.11.17.1"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -92,7 +92,7 @@ LITE_FOR_EASY = True
 # Niveau de réflexion demandé aux modèles Gemini 3.x via l'API REST
 # (clés AQ.) : "minimal" | "low" | "medium" | "high". Par défaut Google
 # met "minimal" (aucune réflexion) → erreurs sur les exos piégeux.
-THINKING_LEVEL = "low"
+THINKING_LEVEL = "medium"
 MODEL_EASY = "gemini-2.5-flash-lite"
 
 # Tarifs Gemini (USD par MILLION de tokens) : (entrée, sortie).
@@ -7097,18 +7097,36 @@ transcript→{{"type":"transcript","transcript_action":true}}"""
         if t == "transcript" or result.get("transcript_action"):
             return {"transcript_action": True}
 
-        if t == "navigation":
+        # Rédaction libre (« 30-50 words ») : l'IA tapait parfois 3 mots
+        # (« complex noun phrase ») → 0 point. Trop court → on redemande.
+        if t == "text_input":
             try:
-                _u = self.driver.current_url or ""
-            except WebDriverException:
-                _u = ""
-            if "/correction" not in _u and getattr(
-                    self, "_nav_dumps", 0) < 3:
-                # DIAGNOSTIC : « Next » proposé hors page de correction →
-                # on garde le HTML (pour repérer un exo non reconnu).
-                self._nav_dumps = getattr(self, "_nav_dumps", 0) + 1
-                self._speak_dumps = min(getattr(self, "_speak_dumps", 0), 3)
-                self._dump_speaking_page("navigation_ia")
+                _acts = [str(a) for a in (result.get("actions") or [])]
+                _txt = " ".join(_acts).strip()
+                _pg = self._get_page_text() or ""
+                _m = (re.search(r"(\d{2,3})\s*(?:-|–|to|à|and)\s*\d{2,3}\s*words",
+                                _pg, re.I)
+                      or re.search(r"(?:at least|minimum|min\.?)\s*(\d{2,3})\s*words",
+                                   _pg, re.I))
+                if _m and len(_txt.split()) < int(_m.group(1)) * 0.6:
+                    _need = int(_m.group(1))
+                    print(f"   ✍️ Rédaction trop courte ({len(_txt.split())} mots, "
+                          f"consigne ≥ {_need}) → nouvelle demande")
+                    raw2 = self._call_gemini(
+                        prompt + f"\n\nATTENTION : ta réponse « {_txt[:80]} » "
+                        f"est FAUSSE car trop courte. La consigne demande un "
+                        f"TEXTE RÉDIGÉ complet d'au moins {_need} mots (phrases "
+                        f"complètes, en respectant la consigne). Réponds "
+                        f'UNIQUEMENT en JSON : {{"type": "text_input", '
+                        f'"actions": ["<le texte complet>"]}}',
+                        image=None)
+                    d2 = self._extract_json(raw2 or "") or {}
+                    a2 = [str(a) for a in (d2.get("actions") or []) if str(a).strip()]
+                    if a2 and len(" ".join(a2).split()) >= _need * 0.6:
+                        result["actions"] = [" ".join(a2)]
+                        print(f"   ✍️ Nouvelle rédaction : {len(' '.join(a2).split())} mots")
+            except Exception as e:  # noqa: BLE001
+                print(f"   ⚠️ Contrôle longueur rédaction : {str(e)[:60]}")
 
         if t == "navigation" and SPEAK_MODE and self._wait_oral_markers():
             # Oral pas encore affiché au moment de l'analyse (page qui finit
@@ -9526,12 +9544,16 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
             pass
         return False
 
-    def _install_fake_speech(self) -> None:
+    def _install_fake_speech(self, force: bool = False) -> None:
         """Installe la reconnaissance vocale simulée : sur chaque page
-        chargée à l'avenir (CDP) ET sur la page actuelle."""
+        chargée à l'avenir (CDP) ET sur la page actuelle.
+        force=True : ré-enregistre le script CDP (l'enregistrement vaut pour
+        UN onglet ; si l'exercice s'ouvre dans un autre onglet, le micro
+        factice n'y était jamais installé → « Start » ne démarrait pas,
+        même après 5 rechargements → Skip)."""
         if not SPEAK_MODE:
             return
-        if not getattr(self, "_fake_speech_registered", False):
+        if force or not getattr(self, "_fake_speech_registered", False):
             try:
                 # « __botEarly » : le micro factice a été installé AVANT
                 # les scripts du site (indispensable : le site garde une
@@ -9753,6 +9775,7 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
             self._speak_reloaded = True
             print("   🔄 Micro factice pas encore actif sur cette page → "
                   "rechargement de la page")
+            self._install_fake_speech(force=True)
             try:
                 self.driver.refresh()
                 time.sleep(5)
@@ -10408,6 +10431,7 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
             # ne démarrait jamais → Skip).
             self._speak_reloaded_sig = sig
             print("   🔄 Micro factice pas encore actif → rechargement")
+            self._install_fake_speech(force=True)
             try:
                 self.driver.refresh()
                 time.sleep(5)
@@ -10526,10 +10550,15 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
             # PAS de retour False : sinon le cycle cliquait un « Restart »
             # caché (dashboard) qui relançait la série SANS recharger la
             # page → micro factice absent → échec en boucle → Skip.
+            self._install_fake_speech(force=True)
             try:
                 self.driver.refresh()
                 time.sleep(6)
                 self._activate_page()
+                ok = bool(self.driver.execute_script(
+                    "return !!window.__botEarly;"))
+                print(f"   🎙️ Après rechargement : micro factice "
+                      f"{'actif' if ok else 'TOUJOURS absent'}")
             except WebDriverException:
                 pass
             return True
