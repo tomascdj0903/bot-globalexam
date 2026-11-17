@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.17.1"
+BOT_VERSION = "2026.11.17.2"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -1960,23 +1960,56 @@ class HybridBot:
         try:
             from selenium.webdriver.chrome.service import Service
             from webdriver_manager.chrome import ChromeDriverManager
-            service = Service(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(service=service, options=opts)
         except ModuleNotFoundError:
             print("❌ Module 'webdriver-manager' manquant.")
             print("   Lance d'abord cette commande dans le terminal :")
             print("   pip install webdriver-manager")
             sys.exit(1)
-        except Exception as e1:
-            # 2) Repli : driver présent dans le PATH / Selenium Manager.
+        e1 = None
+        try:
+            service = Service(ChromeDriverManager().install())
+            self.driver = webdriver.Chrome(service=service, options=opts)
+        except Exception as e:  # noqa: BLE001
+            e1 = e
+        if self.driver is None:
+            # Chrome vient de se mettre à jour → webdriver-manager télécharge
+            # le nouveau chromedriver puis le DÉPLACE ; l'antivirus le bloque
+            # souvent pendant son analyse → « [WinError 5] Accès refusé ».
+            # Le fichier est pourtant là : on l'utilise directement.
+            for drv in self._chromedriver_candidates(str(e1 or "")):
+                try:
+                    self.driver = webdriver.Chrome(service=Service(drv),
+                                                   options=opts)
+                    print(f"   ✅ chromedriver récupéré : {drv}")
+                    break
+                except Exception:  # noqa: BLE001
+                    continue
+        if self.driver is None and e1 is not None and "WinError 5" in str(e1):
+            time.sleep(5)                 # analyse antivirus terminée ?
+            try:
+                service = Service(ChromeDriverManager().install())
+                self.driver = webdriver.Chrome(service=service, options=opts)
+            except Exception:  # noqa: BLE001
+                pass
+        if self.driver is None:
+            # Repli : driver présent dans le PATH / Selenium Manager.
             try:
                 self.driver = webdriver.Chrome(options=opts)
-            except Exception:
-                print(f"❌ Chrome non trouvé. Lance avec "
-                      f"--remote-debugging-port={DEBUG_PORT}")
-                print(f"   Vérifie que la fenêtre Chrome (port "
-                      f"{DEBUG_PORT}) est bien OUVERTE avant de lancer "
-                      f"le bot.")
+            except Exception:  # noqa: BLE001
+                print(f"❌ Connexion à Chrome impossible (port {DEBUG_PORT}).")
+                if "WinError 5" in str(e1) or "chromedriver" in str(e1).lower():
+                    import os as _os
+                    print("   ⚠️ Ce n'est PAS un problème de clé API : le "
+                          "« chromedriver » (pilote de Chrome, mis à jour avec "
+                          "Chrome) est bloqué par Windows / l'antivirus.")
+                    print("   👉 Ferme l'appli, supprime le dossier "
+                          + _os.path.join(_os.path.expanduser("~"), ".wdm")
+                          + " puis relance. Si ça recommence, ajoute ce "
+                          "dossier en exclusion de l'antivirus.")
+                else:
+                    print(f"   Vérifie que la fenêtre Chrome (port "
+                          f"{DEBUG_PORT}) est bien OUVERTE avant de lancer "
+                          f"le bot.")
                 print(f"   Détail : {e1}")
                 sys.exit(1)
         try:
@@ -2162,6 +2195,31 @@ class HybridBot:
                   "choisis « Clé fournie ».")
         print("❌ Clé API invalide ou modèle indisponible.")
         sys.exit(1)
+
+    @staticmethod
+    def _chromedriver_candidates(err: str) -> list:
+        """chromedriver.exe déjà téléchargés : chemins cités dans l'erreur
+        de webdriver-manager, puis ceux du cache ~/.wdm (version la plus
+        récente d'abord)."""
+        import glob
+        import os as _os
+        out = []
+        for m in re.findall(r"'([^']*chromedriver[^']*\.exe)'", err or ""):
+            pth = m.replace("\\\\", "\\")
+            if _os.path.isfile(pth) and pth not in out:
+                out.append(pth)
+        base = _os.path.join(_os.path.expanduser("~"), ".wdm", "drivers",
+                             "chromedriver")
+        found = glob.glob(_os.path.join(base, "*", "*", "chromedriver.exe")) \
+            + glob.glob(_os.path.join(base, "*", "*", "*", "chromedriver.exe"))
+
+        def _ver(pth):
+            m = re.search(r"(\d+)\.(\d+)\.(\d+)\.(\d+)", pth)
+            return tuple(int(x) for x in m.groups()) if m else (0,)
+        for pth in sorted(found, key=_ver, reverse=True):
+            if pth not in out:
+                out.append(pth)
+        return out
 
     def _get_status(self) -> str:
         return MODEL_NAME
