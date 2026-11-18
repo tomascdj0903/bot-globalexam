@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.17.2"
+BOT_VERSION = "2026.11.18.1"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -2982,10 +2982,14 @@ class HybridBot:
             has_exercise = False
 
         if not has_exercise:
+            # Diapos à flèche (carrousel) : PAS de recherche de « Next »
+            # (lente, ~15 s, et inutile) → le cycle suivant lance le
+            # carrousel tout de suite.
+            if self._carousel_should_run():
+                return True
             # Page d'intro pure → on avance vers les questions
-            nxt = (self._find_element_by_text("Next")
-                   or self._find_element_by_text("Suivant"))
-            if nxt and safe_is_displayed(nxt):
+            nxt = self._quick_find_next()
+            if nxt is not None:
                 print("   ➡️ Page d'intro (sans exercice) → clic Next")
                 self._ghost_click(nxt)
                 time.sleep(3)
@@ -11861,6 +11865,12 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                 const c = anc(svg);
                 if (!c) continue;
                 if (c.hasAttribute('disabled')) continue;
+                // Pas une image / carte cliquable (zoom, agrandir…) :
+                // avant, le bot cliquait parfois sur une image.
+                if (c.querySelector('img, video, picture')
+                    || c.closest('figure, picture')) continue;
+                const rr = c.getBoundingClientRect();
+                if (rr.width > 90 || rr.height > 90) continue;
                 const ad = (c.getAttribute('aria-disabled') || '').toLowerCase();
                 if (ad === 'true' || ad === '1') continue;
                 const pt = txt(c);
@@ -11883,6 +11893,24 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                 sig: body.replace(/\d{1,2}:\d{2}/g, '').slice(0, 1500),
                 tr: tr};
     """
+
+    def _quick_find_next(self):
+        """Bouton Next / Suivant / Continue visible, en UN appel JS
+        (_find_element_by_text parcourt tous les éléments : très lent)."""
+        try:
+            return self.driver.execute_script("""
+                const vis = e => { const r = e.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0; };
+                for (const b of document.querySelectorAll(
+                        'button, a, [role=button]')) {
+                    const t = (b.innerText || '').trim().toLowerCase();
+                    if (vis(b) && /^(next|suivant|continue|continuer|siguiente|weiter|avanti|próximo)$/.test(t))
+                        return b;
+                }
+                return null;
+            """)
+        except WebDriverException:
+            return None
 
     def _carousel_probe(self) -> dict:
         """Un seul appel JS : flèche + état grisé + signature de diapo."""
@@ -11967,9 +11995,10 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
             # Texte / transcript de la diapo, récoltés AVANT de passer à
             # la suivante (le transcript seulement s'il y en a un).
             try:
-                self._update_reading_passage()
-                if pr.get("tr"):
-                    self._harvest_page_texts()
+                if len(seen) > 1:      # diapo 1 : déjà récoltée en début de cycle
+                    self._update_reading_passage()
+                    if pr.get("tr"):
+                        self._harvest_page_texts()
             except Exception:  # noqa: BLE001
                 pass
             arrow = pr.get("el")
@@ -11987,10 +12016,12 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                     pr = self._carousel_probe()
                     break
             if not changed:
-                # 2e essai (clic perdu pendant l'animation)
-                self._carousel_click(arrow)
-                time.sleep(0.8)
-                pr = self._carousel_probe()
+                # 2e essai seulement pour une VRAIE flèche de carrousel
+                # (pas pour un chevron deviné : c'était parfois une image)
+                if pr.get("kind") == "carousel" and len(seen) > 1:
+                    self._carousel_click(arrow)
+                    time.sleep(0.8)
+                    pr = self._carousel_probe()
                 if pr.get("sig", "") == sig:
                     break                    # plus rien ne bouge
         slides = len(seen)
@@ -12000,7 +12031,9 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         stuck = self.__dict__.setdefault("_carousel_stuck", {})
         key = (first_sig or "")[:600]
         if slides <= 1:
-            stuck[key] = stuck.get(key, 0) + 1
+            # Rien n'a bougé : ce n'est PAS un carrousel → plus jamais sur
+            # cette page (avant : 2 tentatives, 15 s perdues chacune).
+            stuck[key] = stuck.get(key, 0) + 2
         # On vient de travailler sur la page : l'Auto-Refresh ne doit PAS
         # tomber juste après (il renvoyait à la 1re diapo → tout à refaire).
         try:
