@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.18.1"
+BOT_VERSION = "2026.11.20.1"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -93,6 +93,11 @@ LITE_FOR_EASY = True
 # (clés AQ.) : "minimal" | "low" | "medium" | "high". Par défaut Google
 # met "minimal" (aucune réflexion) → erreurs sur les exos piégeux.
 THINKING_LEVEL = "medium"
+# Exos d'ÉCOUTE (vidéo / audio sans bouton transcript) : le son est envoyé
+# une fois à Gemini qui le transcrit ; transcript gardé en cache (fichier
+# cache_media.json) → l'IA répond avec le contenu au lieu de deviner.
+MEDIA_TRANSCRIBE = True
+MEDIA_MAX_MB = 14      # Gemini : requête ≤ 20 Mo une fois en base64
 MODEL_EASY = "gemini-2.5-flash-lite"
 
 # Tarifs Gemini (USD par MILLION de tokens) : (entrée, sortie).
@@ -346,6 +351,10 @@ class _RestGemini:
         for c in (content if isinstance(content, (list, tuple)) else [content]):
             if isinstance(c, str):
                 parts.append({"text": c})
+            elif isinstance(c, dict) and "data" in c:   # audio / vidéo
+                parts.append({"inline_data": {
+                    "mime_type": c.get("mime_type", "video/mp4"),
+                    "data": base64.b64encode(c["data"]).decode()}})
             elif c is not None:              # image PIL
                 bio = io.BytesIO()
                 img = c.convert("RGB") if getattr(c, "mode", "") != "RGB" else c
@@ -646,7 +655,7 @@ NAV_WORDS       = {"next", "suivant", "continue", "continuer"}
 
 # Boutons réflexes (navigation automatique) — Skip ABSENT volontairement
 REFLEX_BUTTONS = [
-    "Move on to the next", "Next activity",
+    "Move on to the next", "Finish the module", "Next activity",
     "Finish", "Terminer", "See results", "Consulter les résultats",
     "Next", "Suivant", "Continue", "Continuer",
 ]
@@ -2473,6 +2482,106 @@ class HybridBot:
     @staticmethod
     def _norm_text(t: str) -> str:
         return " ".join((t or "").split()).lower()
+
+    _JS_MEDIA_URLS = r"""
+        const out = [];
+        document.querySelectorAll('video, audio, video source, audio source')
+            .forEach(a => { const u = a.currentSrc || a.src || '';
+                if (/^https?:/.test(u) && !out.includes(u)) out.push(u); });
+        return out;
+    """
+
+    def _media_cache(self) -> dict:
+        if getattr(self, "_media_cache_d", None) is None:
+            self._media_cache_path = os.path.join(_project_dir(),
+                                                  "cache_media.json")
+            try:
+                with open(self._media_cache_path, encoding="utf-8") as f:
+                    self._media_cache_d = json.load(f)
+            except (OSError, ValueError):
+                self._media_cache_d = {}
+        return self._media_cache_d
+
+    def _download_media(self, url: str) -> bytes | None:
+        import urllib.request
+        lim = MEDIA_MAX_MB * 1024 * 1024
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://general.global-exam.com/"})
+            with urllib.request.urlopen(req, timeout=40) as r:
+                ln = int(r.headers.get("Content-Length") or 0)
+                if ln and ln > lim:
+                    print(f"   🎧 Média trop lourd ({ln // 1048576} Mo) → ignoré")
+                    return None
+                data = r.read(lim + 1)
+            return data if len(data) <= lim else None
+        except Exception as e:  # noqa: BLE001
+            print(f"   🎧 Téléchargement du média impossible : {str(e)[:80]}")
+            return None
+
+    def _transcribe_page_media(self) -> bool:
+        """Exo d'écoute SANS transcript : fait transcrire la vidéo / le son
+        par Gemini (1 fois par média, cache disque) et le met en mémoire de
+        la leçon. Renvoie True si un nouveau texte a été ajouté."""
+        if not MEDIA_TRANSCRIBE or self.model is None:
+            return False
+        # Mode Claude (bot_claude.py) : pas d'envoi de média
+        if getattr(self._call_gemini, "__name__", "") == "_claude_call":
+            return False
+        try:
+            # Bouton transcript présent → texte déjà récupéré autrement
+            if self.driver.execute_script(
+                    "return !!document.querySelector("
+                    "\"[data-testid='transcript-toggle']\");"):
+                return False
+            urls = self.driver.execute_script(self._JS_MEDIA_URLS) or []
+        except WebDriverException:
+            return False
+        urls = [u for u in urls if re.search(r"\.(mp4|mp3|m4a|webm|wav|ogg)(\?|$)",
+                                             u, re.I)]
+        if not urls:
+            return False
+        url = urls[0]
+        failed = self.__dict__.setdefault("_media_failed", set())
+        if url in failed:
+            return False
+        cache = self._media_cache()
+        txt = cache.get(url)
+        if not txt:
+            data = self._download_media(url)
+            if not data:
+                failed.add(url)
+                return False
+            mime = ("audio/mpeg" if url.lower().split("?")[0].endswith(".mp3")
+                    else "audio/mp4" if ".m4a" in url.lower()
+                    else "video/webm" if ".webm" in url.lower()
+                    else "video/mp4")
+            print(f"   🎧 Exo d'écoute : transcription du média par l'IA "
+                  f"({len(data) // 1024} Ko)…")
+            raw = self._call_gemini(
+                f"Transcris MOT À MOT tout ce qui est dit dans ce média "
+                f"(langue : {self.lang_name}). Indique les changements de "
+                f"personne (« A: », « B: »). Ajoute en une ligne à la fin "
+                f"ce qu'on VOIT d'utile (texte affiché, chiffres). Réponds "
+                f"uniquement avec la transcription.",
+                image={"mime_type": mime, "data": data}, temperature=0.0)
+            txt = (raw or "").strip()
+            if len(txt) < 40:
+                print("   🎧 Transcription vide → ignorée")
+                failed.add(url)
+                return False
+            cache[url] = txt
+            try:
+                with open(self._media_cache_path, "w", encoding="utf-8") as f:
+                    json.dump(cache, f, ensure_ascii=False)
+            except OSError:
+                pass
+        else:
+            print("   🎧 Exo d'écoute : transcription déjà en cache")
+        added = self._remember_text(txt, "TRANSCRIPT (vidéo / audio)")
+        print(f"   📝 Écoute : {txt[:110].replace(chr(10), ' ')}…")
+        return bool(added)
 
     def _remember_text(self, text: str, label: str = "TEXTE") -> bool:
         """
@@ -9361,6 +9470,7 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
 
         progression_labels = [
             "Move on to the next",
+            "Finish the module",
             "Next activity",
             "Next",
             "Suivant",
@@ -10296,7 +10406,22 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                 print(f"   🗣️ Voix Windows prête ({len(data) // 1024} Ko)")
                 return data
         except Exception as e:  # noqa: BLE001
-            print(f"   ⚠️ Voix Windows indisponible : {str(e)[:60]}")
+            if sys.platform == "win32":
+                print(f"   ⚠️ Voix Windows indisponible : {str(e)[:60]}")
+        if sys.platform == "darwin":
+            # Mac : voix du système (« say ») en WAV
+            try:
+                import tempfile
+                wav = os.path.join(tempfile.gettempdir(), "bot_tts_mac.wav")
+                subprocess.run(["say", "--data-format=LEI16@22050", "-o",
+                                wav, text], timeout=60, capture_output=True)
+                with open(wav, "rb") as f:
+                    data = f.read()
+                if len(data) > 2000:
+                    print(f"   🗣️ Voix Mac prête ({len(data) // 1024} Ko)")
+                    return data
+            except Exception as e:  # noqa: BLE001
+                print(f"   ⚠️ Voix Mac indisponible : {str(e)[:60]}")
         return b""
 
     _JS_SUPPORTS = r"""
@@ -11134,6 +11259,7 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
             else:
                 progression_labels = [
                     "Move on to the next",
+                    "Finish the module",
                     "Next activity",
                     "Next",
                     "Suivant",
@@ -11196,7 +11322,8 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         # ── PRIORITÉ 1 : "Move on to the next" ───────────────────────
         try:
             xp = (
-                "//*[contains(normalize-space(.), 'Move on to the next') "
+                "//*[(contains(normalize-space(.), 'Move on to the next') "
+                "or contains(normalize-space(.), 'Finish the module')) "
                 "and (self::button or self::a or "
                 "self::div[@role='button'] or self::span)]"
             )
@@ -11220,7 +11347,7 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                 # Priorité au plus petit container (texte direct le plus court)
                 candidates.sort(key=lambda x: x[0])
                 btn = candidates[0][1]
-                print("   🚀 REFLEX : 'Move on to the next' → clic immédiat")
+                print("   🚀 REFLEX : 'Move on to the next' / 'Finish the module' → clic immédiat")
                 # ── Frontière d'activité ──────────────────────────────
                 # "Move on to the next" quitte la leçon courante pour la
                 # suivante. Juste avant, le site affiche souvent un RECAP
@@ -12926,6 +13053,8 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                     if _psig != getattr(self, "_harvest_page_sig", None):
                         self._harvest_page_sig = _psig
                         self._harvest_page_texts()
+                        # Exo d'écoute sans transcript → son transcrit
+                        self._transcribe_page_media()
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -13259,6 +13388,7 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                         # Ordre de priorité des boutons à chercher
                         progression_targets = [
                             "Move on to the next",
+                            "Finish the module",
                             "Next activity",
                             "Next",
                             "Suivant",
