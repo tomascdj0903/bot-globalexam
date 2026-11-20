@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.20.2"
+BOT_VERSION = "2026.11.20.3"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -1861,17 +1861,27 @@ WORTSTELLUNG :
 ADJEKTIVDEKLINATION : stark/schwach/gemischt nach Artikel""",
 
     "pt": """GRAMÁTICA PORTUGUESA C1 :
-SUBJUNTIVO :
-  • Presente : -e/-es/-e/-emos/-eis/-em (AR) | -a/-as/-a/-amos/-ais/-am (ER/IR)
-  • Imperfeito : -asse/-asses/-asse | -esse/-esses/-esse
-  • Futuro do subjuntivo : -ar/-ares/-ar/-armos/-ardes/-arem
-  • Obrigatório após : querer que, esperar que, embora, caso, se (condição futura)
-FUTURO DO CONJUNTIVO : "Quando ele chegar, diga-lhe que..." (ação futura condicionada)
-PERÍFRASES VERBAIS :
-  • "Acabar de + infinitivo" (ação recente) | "Estar a + infinitivo" (PE) / "Estar + gerúndio" (PB)
-  • "Ir + infinitivo" (futuro próximo) | "Ter de/que + infinitivo" (obrigação)
-CONCORDÂNCIA NOMINAL : género e número — atenção às exceções (o programa, a vítima)
-PRONOMES CLÍTICOS : posição pré-verbal (PB) vs mesoclítica/enclítica (PE)""",
+VARIANTE : identifica-a pelo texto da lição e SEGUE-A (nunca mistures).
+  • PE (Portugal) : tu/vocês, « estar a + infinitivo », ênclise (diz-me), autocarro, comboio, telemóvel, facto, receção
+  • PB (Brasil)  : você, « estar + gerúndio », próclise (me diz), ônibus, trem, celular, fato, recepção
+PRONOMES CLÍTICOS (PE) :
+  • Ênclise por defeito : « Dá-me o livro », « Encontrei-o »
+  • Próclise OBRIGATÓRIA após : não/nunca/ninguém/nada, que/quem/onde (relativas), já, ainda, só, também, talvez, todos, conjunções (quando, se, porque, embora)
+  • Mesóclise no futuro/condicional : dar-lhe-ei, dir-se-ia | Contrações : lho, lha, mo, to (= lhe+o, me+o)
+  • -lo/-la/-los/-las após -r/-s/-z (fazê-lo, compramo-las) ; -no/-na após nasal (dão-no)
+CONJUNTIVO (subjuntivo) :
+  • Presente após : querer/esperar/desejar que, é importante/possível que, embora, para que, antes que, até que, sem que, caso, talvez, oxalá
+  • Imperfeito (-asse/-esse/-isse) : se + imperfeito do conjuntivo → condicional (« Se eu tivesse tempo, iria »)
+  • Futuro do conjuntivo : quando/se/enquanto/assim que/logo que + futuro (« Quando chegares, liga-me » ; « Se puder, venha »)
+  • Mais-que-perfeito : se tivesse feito → teria feito
+INFINITIVO PESSOAL : « para (nós) sabermos », « é melhor eles saírem », « ao chegarmos »
+TEMPOS : pretérito perfeito simples (fiz, fui) = ação concluída ≠ composto (tenho feito = repetição/continuidade até agora) ≠ imperfeito (fazia = hábito/descrição)
+SER ≠ ESTAR ≠ FICAR : ser (essência, profissão, origem) | estar (estado, localização temporária) | ficar (localização fixa, mudança de estado : ficar contente)
+POR ≠ PARA : por (causa, meio, através de, preço) | para (finalidade, destino, prazo)
+CONTRAÇÕES : de+o=do, em+a=na, a+a=à, por+os=pelos, de+este=deste, em+aquele=naquele
+REGÊNCIA : gostar DE, pensar EM, depender DE, sonhar COM, lembrar-se DE, assistir A (ver), chegar A (PE) / EM (PB)
+CONCORDÂNCIA : género e número (o problema, o mapa, a mão, a foto) ; « Fazem dois anos » ✗ → « Faz dois anos » ✓ ; « haver » impessoal (há muitas pessoas)
+ACORDO ORTOGRÁFICO 1990 : ação, ótimo, direção (sem c/p mudos) ; PE mantém « facto », « receção »""",
 
     "it": """GRAMMATICA ITALIANA C1 :
 CONGIUNTIVO — obbligatorio dopo :
@@ -1891,7 +1901,7 @@ GRAMMAR_SHORT: dict[str, str] = {
     "fr": "Subjonctif: bien que/pour que/vouloir que. PC≠Imparfait. Accord pp avec avoir+COD antéposé. EN(quantité)/Y(lieu). Inversion interrogative.",
     "en": "REPORTED SPEECH BACKSHIFT: said/told→is→was, has→had, will→would. DISCOURSE MARKERS for reorder: 'though'(end)=contrast to prev statement | 'at first'=opening | 'more X'=refers to prev X | sequence: compliment→reaction(though/at first)→elaboration(but/however). Modal perfects(must/should/could+have+pp).",
     "de": "Konjunktiv II: wäre/hätte/würde+Inf. Passiv: wird(Vorgang)≠ist(Zustand)+pp. Verb Position2(Haupts.)/Ende(Nebs.). Relativpronomen im Genitiv(dessen/deren).",
-    "pt": "Futuro do conjuntivo(quando chegar). Infinitivo pessoal(para nós sabermos). PC≠Imperfeito. Mesóclise PE vs próclise PB.",
+    "pt": "Segue a variante da lição (PE: tu, estar a+inf, ênclise dá-me | PB: você, gerúndio, próclise me dá). Próclise após não/que/já/talvez/quando. Futuro do conjuntivo (quando chegares/se puder). Se+imperfeito do conj.→condicional. Infinitivo pessoal (para sabermos). Ser≠Estar≠Ficar. Por≠Para. Contrações (do/na/à/pelos). Regência: gostar DE, pensar EM, sonhar COM.",
     "it": "Congiuntivo: benché/sebbene/affinché/volere che. Cong.imperfetto(-asse/-esse). Condizionale passato(avrei voluto). Pronomi combinati(me lo/glielo).",
 }
 
@@ -1922,10 +1932,12 @@ CRITIQUE_RULES: dict[str, str] = {
 4. Adjektivdeklination (stark/schwach/gemischt)
 5. Alle Elemente verwendet?""",
     "pt": """Verifica por ordem:
-1. Pronomes clíticos — próclise / ênclise / mesóclise
-2. Subjuntivo após embora/caso/quando (futuro do conjuntivo)
-3. Concordância nominal e verbal
-4. Todos os elementos do stock utilizados ?""",
+1. Variante da lição (PE ou PB) respeitada — sem misturar
+2. Pronomes clíticos — próclise / ênclise / mesóclise (atrator : não, que, já, talvez…)
+3. Conjuntivo após embora/para que/talvez ; futuro do conjuntivo após quando/se/assim que
+4. Preposições e contrações (de+o=do, em+a=na, a+a=à) ; regência (gostar DE, pensar EM)
+5. Concordância nominal e verbal, acentos (é/e, à/a, está/esta, pôr/por)
+6. Todos os elementos do stock utilizados ?""",
     "it": """Verifica nell'ordine:
 1. Congiuntivo dopo benché/sebbene/affinché/volere che
 2. Pronomi combinati PRIMA del verbo coniugato
@@ -10348,6 +10360,21 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         except WebDriverException:
             return None
 
+    def _pt_variant(self) -> str:
+        """« PE » (Portugal) ou « PB » (Brésil) d'après les textes de la
+        leçon et la page (marqueurs typiques)."""
+        try:
+            t = " " + (str(getattr(self, "lesson_texts", "") or "") + " "
+                       + (self._get_page_text() or "")).lower() + " "
+        except Exception:  # noqa: BLE001
+            return "PB"
+        pe = len(re.findall(r"\b(estou|está|estamos|estão|estava) a \w+r\b"
+                            r"|\b\w+-(me|te|se|lhe|nos|vos|o|a|lo|la)\b"
+                            r"|\b(autocarro|comboio|telemóvel|pequeno-almoço|facto|receção|equipa|ecrã|casa de banho)\b", t))
+        pb = len(re.findall(r"\b(você|vocês|ônibus|trem|celular|café da manhã|fato|recepção|tela|banheiro|legal)\b"
+                            r"|\b(estou|está|estamos|estão|estava) \w+ndo\b", t))
+        return "PE" if pe > pb else "PB"
+
     def _tts_audio(self, text: str) -> bytes:
         """Voix de synthèse (mp3/wav) du texte à dire. 1) voix Google
         Traduction (naturelle, découpée par phrases) ; 2) repli : voix
@@ -10356,6 +10383,8 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         import urllib.request
         lang = {"es": "es", "en": "en", "fr": "fr", "de": "de",
                 "pt": "pt", "it": "it"}.get(self.langue, "en")
+        if self.langue == "pt" and self._pt_variant() == "PE":
+            lang = "pt-PT"                     # voix du Portugal
         chunks, cur = [], ""
         for sent in re.split(r"(?<=[.!?])\s+", text.strip()):
             if cur and len(cur) + len(sent) + 1 > 170:
@@ -10396,7 +10425,7 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                 "Add-Type -AssemblyName System.Speech;"
                 "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer;"
                 f"$v = $s.GetInstalledVoices() | ? {{ $_.VoiceInfo.Culture"
-                f".TwoLetterISOLanguageName -eq '{lang}' }} | select -First 1;"
+                f".TwoLetterISOLanguageName -eq '{lang[:2]}' }} | select -First 1;"
                 "if ($v) { $s.SelectVoice($v.VoiceInfo.Name) };"
                 f"$s.SetOutputToWaveFile('{wav}');"
                 f"$s.Speak([IO.File]::ReadAllText('{txt}',"
