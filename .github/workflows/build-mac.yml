@@ -1,0 +1,80 @@
+# Construit l'app Mac (Apple Silicon + Intel) et la publie dans la release
+# « mac-latest ». Se relance tout seul quand launcher.py / la spec changent.
+# bot.py n'a PAS besoin de reconstruire : l'app le met à jour au lancement.
+name: Build Mac
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "launcher.py"
+      - "globalexam_bot_mac.spec"
+      - "requirements.txt"
+      - ".github/workflows/build-mac.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14        # Apple Silicon (M1/M2/M3/M4)
+            arch: arm64
+          - runner: macos-13        # Intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Construction de l'app
+        run: |
+          # Pas de clé dans l'app publique : « Clé fournie » indisponible,
+          # la clé perso est saisie une fois puis mémorisée.
+          python -m PyInstaller --clean --noconfirm globalexam_bot_mac.spec
+          test -d dist/BotGlobalExam.app
+
+      - name: Test de démarrage (imports)
+        run: |
+          python -c "import launcher, bot; print('imports OK', bot.BOT_VERSION)"
+
+      - name: Archive
+        run: |
+          cd dist
+          ditto -c -k --sequesterRsrc --keepParent BotGlobalExam.app \
+            ../BotGlobalExam-mac-${{ matrix.arch }}.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-${{ matrix.arch }}
+          path: BotGlobalExam-mac-${{ matrix.arch }}.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Publication (release « mac-latest »)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view mac-latest >/dev/null 2>&1 || \
+            gh release create mac-latest --title "Bot GlobalExam — Mac" \
+              --notes "App Mac. Installation : voir install_mac.sh (une seule commande dans le Terminal)."
+          gh release upload mac-latest out/*.zip --clobber

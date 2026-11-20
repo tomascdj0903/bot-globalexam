@@ -574,7 +574,20 @@ UPDATE_REPO = "tomascdj0903/bot-globalexam"
 UPDATE_RAW = f"https://raw.githubusercontent.com/{UPDATE_REPO}/main/"
 
 
+def _mac_data_dir():
+    """App Mac (.app) : son dossier est en LECTURE SEULE (Gatekeeper /
+    /Applications) → mises à jour, journaux et erreurs vont dans
+    ~/Library/Application Support/BotGlobalExam."""
+    if getattr(sys, "frozen", False) and sys.platform == "darwin":
+        d = Path.home() / "Library" / "Application Support" / "BotGlobalExam"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    return None
+
+
 def _app_dir() -> Path:
+    if _mac_data_dir():
+        return _mac_data_dir()
     if getattr(sys, "frozen", False):
         base = Path(sys.executable).resolve().parent
         if base.name.lower() == "dist":
@@ -754,6 +767,8 @@ def save_config(cfg: dict) -> None:
 def project_dir() -> Path:
     """Dossier du projet (à côté de l'exe ; si l'exe est dans dist/, on
     remonte d'un cran)."""
+    if _mac_data_dir():
+        return _mac_data_dir()
     if getattr(sys, "frozen", False):
         base = Path(sys.executable).resolve().parent
         if base.name.lower() == "dist":

@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.20.1"
+BOT_VERSION = "2026.11.20.2"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -525,6 +525,12 @@ ON_AUTO_PAUSE = None
 def _project_dir() -> str:
     """Dossier du projet : à côté du bot (ou de l'exe ; si l'exe est dans
     dist/, on remonte d'un cran pour tout garder dans le dossier projet)."""
+    if getattr(sys, "frozen", False) and sys.platform == "darwin":
+        # App Mac : dossier de l'app en lecture seule
+        base = os.path.join(os.path.expanduser("~"), "Library",
+                            "Application Support", "BotGlobalExam")
+        os.makedirs(base, exist_ok=True)
+        return base
     if getattr(sys, "frozen", False):
         base = os.path.dirname(os.path.abspath(sys.executable))
         if os.path.basename(base).lower() == "dist":

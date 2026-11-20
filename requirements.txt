@@ -4,6 +4,7 @@
 
 # --- Exécution (le bot) ---
 selenium
+webdriver-manager
 Pillow
 google-generativeai
 wordfreq
