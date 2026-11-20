@@ -22,9 +22,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14        # Apple Silicon (M1/M2/M3/M4)
+          - runner: macos-15        # Apple Silicon (M1/M2/M3/M4)
             arch: arm64
-          - runner: macos-13        # Intel
+          - runner: macos-15-intel  # Intel
             arch: x86_64
     runs-on: ${{ matrix.runner }}
     steps:
