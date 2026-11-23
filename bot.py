@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.20.3"
+BOT_VERSION = "2026.11.23.1"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -2520,6 +2520,44 @@ class HybridBot:
                 self._media_cache_d = {}
         return self._media_cache_d
 
+    def _media_urls_by_play(self) -> list:
+        try:
+            btn = self.driver.execute_script(
+                "return document.querySelector('[data-testid=\"media-play\"]');")
+            if not btn:
+                return []
+            self.driver.execute_script("arguments[0].click();", btn)
+            time.sleep(1.8)
+            got = self.driver.execute_script(r"""
+                const out = [];
+                document.querySelectorAll('video, audio').forEach(a => {
+                    const u = a.currentSrc || a.src || '';
+                    if (/^https?:/.test(u)) out.push(u);
+                    try { a.pause(); a.currentTime = 0; } catch (e) {}
+                });
+                // les plus RÉCENTES d'abord (site monopage : les médias des
+                // questions précédentes restent dans la liste)
+                performance.getEntriesByType('resource').slice().reverse()
+                    .forEach(e => {
+                        if (/\.(mp4|mp3|m4a|webm|wav|ogg)(\?|$)/i.test(e.name))
+                            out.push(e.name);
+                    });
+                return out;
+            """) or []
+            out = []
+            for u in got:
+                if u not in out and "euronews" not in u and re.search(
+                        r"\.(mp4|mp3|m4a|webm|wav|ogg)(\?|$)", u, re.I):
+                    out.append(u)
+            if out:
+                print(f"   🎧 Média trouvé en lançant la lecture : {out[0][:90]}")
+            else:
+                print("   🎧 Lecture lancée mais aucun fichier média repéré "
+                      "(flux protégé ?)")
+            return out
+        except WebDriverException:
+            return []
+
     def _download_media(self, url: str) -> bytes | None:
         import urllib.request
         lim = MEDIA_MAX_MB * 1024 * 1024
@@ -2558,6 +2596,11 @@ class HybridBot:
             return False
         urls = [u for u in urls if re.search(r"\.(mp4|mp3|m4a|webm|wav|ogg)(\?|$)",
                                              u, re.I)]
+        if not urls:
+            # Lecteur GlobalExam : PAS de balise <video>/<audio> avant le
+            # 1er « Play » (rien trouvé pendant des semaines). On lance la
+            # lecture 1,5 s, on lit l'adresse chargée, puis on met en pause.
+            urls = self._media_urls_by_play()
         if not urls:
             return False
         url = urls[0]
