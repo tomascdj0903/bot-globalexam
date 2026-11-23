@@ -2201,6 +2201,10 @@ class HybridBot:
     def _init_best_model(self) -> None:
         print(f"   🔍 Connexion à {MODEL_NAME}...")
         key = API_KEYS[0].strip()
+        if not key:
+            print("❌ Aucune clé Gemini : cette version n'a pas de « Clé "
+                  "fournie ». Choisis « Ma propre clé » et colle ta clé.")
+            sys.exit(1)
         # Plusieurs façons d'envoyer la clé : les anciennes clés « AIza… »
         # passent partout ; les nouvelles clés « AQ.… » de Google AI Studio
         # peuvent être refusées par le transport gRPC → on essaie aussi en

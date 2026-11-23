@@ -721,6 +721,14 @@ LOG_DETAIL_MARKERS = (
 # =====================================================================
 #  UTILITAIRES (hors GUI)
 # =====================================================================
+def _has_provided_key() -> bool:
+    try:
+        from cle_fournie import CLE_FOURNIE  # noqa: F401
+        return bool(str(CLE_FOURNIE).strip())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def find_chrome() -> str | None:
     """Retourne le chemin de l'exécutable Chrome, ou None si introuvable."""
     for name in ("chrome", "google-chrome", "chrome.exe"):
@@ -1043,6 +1051,9 @@ class LauncherApp:
         cfg = load_config()
         self.lang_code = cfg.get("langue", "en")
         self.key_mode = cfg.get("key_mode", "fournie")
+        # App sans « Clé fournie » (version Mac publique) → clé perso.
+        if not _has_provided_key():
+            self.key_mode = "perso"
         self.debug_mode = bool(cfg.get("debug", False))
         self.bot_module = None
         try:
@@ -1452,6 +1463,12 @@ class LauncherApp:
     def _select_key_mode(self, mode: str) -> None:
         if self.phase not in ("idle",):
             return
+        if mode == "fournie" and not _has_provided_key():
+            messagebox.showinfo(
+                "Clé fournie indisponible",
+                "Cette version n'inclut pas de clé fournie.\n"
+                "Colle ta propre clé Gemini (gratuite sur AI Studio).")
+            mode = "perso"
         self.key_mode = mode if mode in ("fournie", "perso") else "fournie"
         for m, b in self.key_btns.items():
             b.set(kind="chip_on" if m == self.key_mode else "chip")
