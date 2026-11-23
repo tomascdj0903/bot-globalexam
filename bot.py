@@ -52,7 +52,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.23.1"
+BOT_VERSION = "2026.11.23.2"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -13658,6 +13658,29 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                           f"stock={len(code_options)}, "
                           f"zones={len(self._get_drop_zones())}, "
                           f"inputs={len(self._get_text_inputs())}")
+                    # Page de cours (texte long, « Next » tout en bas,
+                    # hors écran) : rien à faire → on clique Next. Avant :
+                    # l'IA renvoyait « none » en boucle pendant des minutes.
+                    try:
+                        _no_exo = (not code_options
+                                   and not self._get_drop_zones()
+                                   and not self._get_text_inputs()
+                                   and not self._oral_marker_now())
+                    except Exception:  # noqa: BLE001
+                        _no_exo = False
+                    _nx = self._quick_find_next() if _no_exo else None
+                    if _nx is not None:
+                        print("   ➡️ Page de cours sans exercice → clic Next "
+                              "(bouton en bas de page)")
+                        try:
+                            self.driver.execute_script(
+                                "arguments[0].scrollIntoView({block:'center'});"
+                                "arguments[0].click();", _nx)
+                        except WebDriverException:
+                            self._ghost_click(_nx)
+                        consecutive_none = 0
+                        time.sleep(2.5)
+                        continue
                     consecutive_none += 1
                     if consecutive_none >= MAX_NONE_RUNS:
                         print(f"   ⚠️ {MAX_NONE_RUNS} cycles sans action "
