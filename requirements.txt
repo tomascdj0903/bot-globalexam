@@ -5,6 +5,7 @@
 # --- Exécution (le bot) ---
 selenium
 webdriver-manager
+certifi
 Pillow
 google-generativeai
 wordfreq

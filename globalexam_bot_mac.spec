@@ -26,7 +26,7 @@ from PyInstaller.utils.hooks import collect_all
 datas, binaries, hiddenimports = [], [], []
 
 for pkg in ("wordfreq", "spellchecker", "google.generativeai", "selenium",
-            "webdriver_manager"):
+            "webdriver_manager", "certifi"):
     try:
         d, b, h = collect_all(pkg)
         datas += d

@@ -21,6 +21,21 @@ import time
 import threading
 from typing import Iterable
 
+# Mac (app .app) : le Python embarqué ne voit pas les certificats du
+# système → « certificate verify failed » sur toutes les connexions HTTPS
+# (mise à jour, Gemini REST, voix, vidéos). On utilise ceux de certifi.
+if sys.platform == "darwin":
+    try:
+        import ssl as _ssl
+        import certifi as _certifi
+        os.environ.setdefault("SSL_CERT_FILE", _certifi.where())
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", _certifi.where())
+        _ssl._create_default_https_context = (
+            lambda *a, **k: _ssl.create_default_context(cafile=_certifi.where()))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 from selenium import webdriver
 from selenium.common.exceptions import (
     ElementClickInterceptedException,
@@ -52,7 +67,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.23.2"
+BOT_VERSION = "2026.11.23.3"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -419,6 +434,53 @@ class _RestGemini:
         r.text = text
         r.usage_metadata = _U()
         return r
+
+
+def _pick_sdk_models(err: str = "") -> bool:
+    """Clés « AIza » récentes : gemini-2.5 refusé (« no longer available to
+    new users »). Choisit le Flash le plus récent proposé par Google (et son
+    Flash-Lite pour les appels légers). Les anciennes clés ne passent
+    jamais ici (leur test réussit)."""
+    global MODEL_NAME, MODEL_ARBITRAGE, MODEL_VERIF_TEXT, MODEL_VERIF_QCM
+    global MODEL_EASY
+    try:
+        names = [m.name.split("/", 1)[-1] for m in genai.list_models()
+                 if "generateContent" in (m.supported_generation_methods or [])]
+    except Exception as e:  # noqa: BLE001
+        print(f"   ⚠️ Liste des modèles indisponible : {str(e)[:80]}")
+        names = []
+    sugg = re.search(r"models/(gemini-[\w.\-]+)", err or "")
+    if sugg and sugg.group(1) != MODEL_NAME and sugg.group(1) not in names:
+        names.append(sugg.group(1))
+
+    def ranked(lite: bool) -> list:
+        pat = re.compile(r"^gemini-(\d+(?:\.\d+)?)-flash"
+                         + (r"-lite" if lite else r"(?!-lite)")
+                         + r"(-latest|-preview[\w-]*|-\d+)?$")
+        found = []
+        for n in names:
+            m = pat.match(n)
+            if not m or any(x in n for x in ("image", "tts", "live", "audio",
+                                             "2.5", "2.0", "1.5")):
+                continue
+            stable = 0 if (m.group(2) or "").startswith("-preview") else 1
+            found.append((stable, float(m.group(1)), 1 if not m.group(2) else 0, n))
+        return [f[3] for f in sorted(found, reverse=True)]
+
+    for cand in ranked(False) + ranked(True):
+        try:
+            _make_model(cand).generate_content(
+                "Reply OK", request_options={"timeout": 30})
+        except Exception as e:  # noqa: BLE001
+            print(f"   ⚠️ {cand} refusé : {' '.join(str(e).split())[:90]}")
+            continue
+        lites = [x for x in ranked(True)]
+        print(f"   🔁 gemini-2.5 refusé pour cette clé → {cand}")
+        MODEL_NAME = MODEL_VERIF_TEXT = cand
+        MODEL_ARBITRAGE = MODEL_VERIF_QCM = MODEL_EASY = (lites[0] if lites
+                                                         else cand)
+        return True
+    return False
 
 
 def _pick_available_models(key: str) -> None:
@@ -2207,6 +2269,20 @@ class HybridBot:
                 genai.get_model(f"models/{MODEL_NAME}")
                 self.model = _make_model(MODEL_NAME)
                 _GENAI_CONF = conf
+                # Nouvelles clés : Google répond « 404 … no longer available
+                # to new users » pour gemini-2.5 alors que get_model passe →
+                # 1 vrai appel de test ; si refusé, on prend le Flash récent.
+                try:
+                    self.model.generate_content(
+                        "Reply OK", request_options={"timeout": 30})
+                except Exception as te:  # noqa: BLE001
+                    tt = str(te)
+                    if ("no longer available" in tt or "404" in tt
+                            or "not found" in tt.lower()):
+                        if _pick_sdk_models(tt):
+                            self.model = _make_model(MODEL_NAME)
+                        else:
+                            raise
                 print(f"   ✅ {MODEL_NAME}"
                       + ("" if label == "gRPC" else f" (clé acceptée en {label})"))
                 return

@@ -41,6 +41,21 @@ import subprocess
 from collections import deque
 from pathlib import Path
 
+# Mac (app .app) : le Python embarqué ne voit pas les certificats du
+# système → « certificate verify failed » sur toutes les connexions HTTPS
+# (mise à jour, Gemini REST, voix, vidéos). On utilise ceux de certifi.
+if sys.platform == "darwin":
+    try:
+        import ssl as _ssl
+        import certifi as _certifi
+        os.environ.setdefault("SSL_CERT_FILE", _certifi.where())
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", _certifi.where())
+        _ssl._create_default_https_context = (
+            lambda *a, **k: _ssl.create_default_context(cafile=_certifi.where()))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, messagebox
