@@ -67,7 +67,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.27.6"
+BOT_VERSION = "2026.11.27.7"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -11814,25 +11814,30 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         return "switched"
 
     _JS_PATH_CONTINUE = r"""
-        // Bouton « Continue » du panneau violet (parcours) :
-        // <button class="… rounded-full … bg-white text-primary-800 …">Continue <svg/></button>
-        // Pas de test « dans l'écran » : le bouton est souvent SOUS la
-        // ligne de flottaison du panneau (avant : jamais trouvé → le bot
-        // cliquait l'image du badge à la place).
-        const vis = e => { const r = e.getBoundingClientRect();
-            const st = getComputedStyle(e);
-            return r.width > 0 && r.height > 0 &&
-                   st.visibility !== 'hidden' && st.display !== 'none'; };
-        for (const b of document.querySelectorAll('button, a')) {
-            const t = (b.innerText || '').trim().toLowerCase();
-            if (!/^(continue|continuer)$/.test(t) || !vis(b) || b.disabled)
+        // « Continue » de la carte d'activité « In progress » (parcours).
+        // Vu sur le vrai site (27/11) : ce n'est PAS un <button> mais une
+        // pastille <div class="… rounded-full bg-white … text-primary-800">
+        // dans une carte « div.relative.cursor-pointer » ; il y en a UNE
+        // PAR MODULE → on prend celle au plus près du centre de l'écran
+        // (le site centre le module en cours après son animation).
+        const cands = [];
+        for (const b of document.querySelectorAll('button, a, div, span')) {
+            const t = (b.textContent || '').trim().toLowerCase();
+            if (!/^(continue|continuer)$/.test(t) || b.children.length > 2)
                 continue;
-            const c = b.className || '';
-            if (typeof c === 'string' && /rounded-full/.test(c) &&
-                    /(text-primary-800|bg-white)/.test(c))
-                return b;
+            const c = String(b.className && b.className.baseVal !== undefined
+                             ? b.className.baseVal : (b.className || ''));
+            if (!/rounded-full/.test(c) ||
+                    !/(bg-white|text-primary-800)/.test(c)) continue;
+            const r = b.getBoundingClientRect();
+            const st = getComputedStyle(b);
+            if (r.width <= 0 || r.height <= 0 || st.visibility === 'hidden'
+                    || st.display === 'none' || b.disabled) continue;
+            const dist = Math.abs((r.top + r.bottom) / 2 - innerHeight / 2);
+            cands.push([dist, b.closest('.cursor-pointer') || b]);
         }
-        return null;
+        cands.sort((x, y) => x[0] - y[0]);
+        return cands.length ? cands[0][1] : null;
     """
 
     def _click_path_continue(self, wait: float = 0) -> bool:
@@ -11869,7 +11874,11 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         // Chevrons « ⌄ » des modules repliés (path qui commence par
         // « M5.83 9.03 », classe transition-transform), non tournés.
         const out = [];
-        for (const svg of document.querySelectorAll('svg.transition-transform')) {
+        for (const svg of document.querySelectorAll(
+                'svg.transition-transform.duration-300.text-typeface-700')) {
+            // jamais la barre latérale (langue, parcours…) : avant, le bot
+            // dépliait « Italian » / « General » et cliquait partout
+            if (svg.closest('aside, nav, header')) continue;
             const p = svg.querySelector('path');
             const d = (p && p.getAttribute('d')) || '';
             if (!d.startsWith('M5.83 9.03')) continue;
