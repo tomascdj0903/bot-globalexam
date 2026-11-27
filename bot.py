@@ -67,18 +67,24 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.27.3"
+BOT_VERSION = "2026.11.27.4"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
 API_KEYS = [
     "",
 ]
+_CF = ""
 try:
     from cle_fournie import CLE_FOURNIE as _CF
     API_KEYS[0] = _CF
 except Exception:  # noqa: BLE001
     pass
+# « Clé fournie » : modèles un cran au-dessus de 2.5 (le plus d'erreurs
+# venait de 2.5 Flash). Testé : 3.5 Flash répond juste là où 2.5 se
+# trompait. Les clés perso gardent le comportement d'origine.
+PROVIDED_MODEL      = "gemini-3.5-flash"
+PROVIDED_MODEL_LITE = "gemini-3.5-flash-lite"
 MODEL_NAME      = "gemini-2.5-flash"
 # Modèle MOINS CHER utilisé UNIQUEMENT pour l'arbitrage (quand la passe A
 # et la passe B divergent). ~3× moins cher en entrée et ~6× en sortie que
@@ -120,6 +126,8 @@ MODEL_EASY = "gemini-2.5-flash-lite"
 # Sert UNIQUEMENT à estimer le coût dans les logs (mesure).
 PRICING = {
     "gemini-2.5-flash":      (0.30, 2.50),
+    "gemini-3.5-flash":      (0.50, 3.00),
+    "gemini-3.5-flash-lite": (0.30, 2.50),
     "gemini-2.5-flash-lite": (0.10, 0.40),
 }
 USD_TO_EUR = 0.92            # approximatif, pour l'affichage € des logs
@@ -2199,8 +2207,13 @@ class HybridBot:
     #  GESTION MODÈLE (clé unique, pas de rotation)
     # =================================================================
     def _init_best_model(self) -> None:
-        print(f"   🔍 Connexion à {MODEL_NAME}...")
+        global MODEL_NAME, MODEL_ARBITRAGE, MODEL_VERIF_TEXT
+        global MODEL_VERIF_QCM, MODEL_EASY
         key = API_KEYS[0].strip()
+        if key and _CF and key == str(_CF).strip():
+            MODEL_NAME = MODEL_VERIF_TEXT = PROVIDED_MODEL
+            MODEL_ARBITRAGE = MODEL_VERIF_QCM = MODEL_EASY = PROVIDED_MODEL_LITE
+        print(f"   🔍 Connexion à {MODEL_NAME}...")
         if not key:
             print("❌ Aucune clé Gemini : cette version n'a pas de « Clé "
                   "fournie ». Choisis « Ma propre clé » et colle ta clé.")
