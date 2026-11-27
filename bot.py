@@ -67,7 +67,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.27.2"
+BOT_VERSION = "2026.11.27.3"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -11800,6 +11800,47 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         self._expanded_chevrons.clear()
         return "switched"
 
+    _JS_PATH_CONTINUE = r"""
+        // Bouton « Continue » du panneau violet (parcours) :
+        // <button class="… rounded-full … bg-white text-primary-800 …">Continue <svg/></button>
+        const vis = e => { const r = e.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 && r.bottom > 0 &&
+                   r.top < innerHeight; };
+        for (const b of document.querySelectorAll('button, a')) {
+            const t = (b.innerText || '').trim().toLowerCase();
+            if (!/^(continue|continuer)$/.test(t) || !vis(b) || b.disabled)
+                continue;
+            const c = b.className || '';
+            if (typeof c === 'string' && /rounded-full/.test(c) &&
+                    /(text-primary-800|bg-white)/.test(c))
+                return b;
+        }
+        return null;
+    """
+
+    def _click_path_continue(self, wait: float = 0) -> bool:
+        """Clique le « Continue » blanc du panneau violet (nouvelle
+        interface du parcours). wait : secondes max d'attente."""
+        t0 = time.time()
+        while True:
+            try:
+                el = self.driver.execute_script(self._JS_PATH_CONTINUE)
+            except WebDriverException:
+                el = None
+            if el is not None:
+                print("   🎯 Parcours : bouton « Continue » (panneau violet) "
+                      "→ clic")
+                self._clear_lesson_texts("nouvelle activité (parcours)")
+                try:
+                    self.driver.execute_script("arguments[0].click();", el)
+                except WebDriverException:
+                    self._ghost_click(el)
+                time.sleep(3)
+                return True
+            if time.time() - t0 >= wait:
+                return False
+            time.sleep(1)
+
     def _pass_dashboard(self) -> bool:
         # ── GARDE-FOU GLOBAL : on ne traite le dashboard QUE si la
         # page n'a manifestement aucun exo en cours.
@@ -11843,6 +11884,10 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
             except WebDriverException:
                 pass
             return False
+
+        # ── PANNEAU VIOLET « Continue » (nouvelle interface) ─────────
+        if self._click_path_continue(wait=0):
+            return True
 
         # ── ÉTAPE 1 : le module AFFICHÉ est-il terminé ? ─────────────
         # Menu « Select a module of the learning path » : un module
@@ -11889,7 +11934,13 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                     print(f"   🎯 Dashboard : bouton '{safe_text(el)[:30]}' "
                           f"→ clic (accueil)")
                     self._ghost_click(el)
-                    time.sleep(2)
+                    # Nouvelle interface : une ANIMATION fait défiler les
+                    # exercices (~10 s) puis ouvre le panneau violet avec
+                    # son propre « Continue ». Avant, le bot cliquait trop
+                    # tôt → navigation ratée.
+                    print("   ⏳ Animation du parcours → attente 10 s")
+                    time.sleep(10)
+                    self._click_path_continue(wait=8)
                     return True
 
             # ── PRIORITÉ 1 : cercle avec bordure orange = activité dispo
