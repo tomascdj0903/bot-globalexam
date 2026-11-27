@@ -67,7 +67,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.27.7"
+BOT_VERSION = "2026.11.27.8"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -11821,6 +11821,11 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         // PAR MODULE → on prend celle au plus près du centre de l'écran
         // (le site centre le module en cours après son animation).
         const cands = [];
+        // En-têtes de modules : « MODULE 2 … 3 / 12 activities »
+        const headers = [...document.querySelectorAll('div, section, header, button')]
+            .filter(h => h.children.length <= 8 &&
+                    /^\s*module\s+\d+/i.test(h.innerText || '') &&
+                    /\d+\s*\/\s*\d+\s*activit/i.test(h.innerText || ''));
         for (const b of document.querySelectorAll('button, a, div, span')) {
             const t = (b.textContent || '').trim().toLowerCase();
             if (!/^(continue|continuer)$/.test(t) || b.children.length > 2)
@@ -11833,7 +11838,16 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
             const st = getComputedStyle(b);
             if (r.width <= 0 || r.height <= 0 || st.visibility === 'hidden'
                     || st.display === 'none' || b.disabled) continue;
-            const dist = Math.abs((r.top + r.bottom) / 2 - innerHeight / 2);
+            let dist = Math.abs((r.top + r.bottom) / 2 - innerHeight / 2);
+            // Module déjà TERMINÉ (« 12 / 12 activities » dans son en-tête) :
+            // sa carte « In progress » vient d'un clic de trop, pas du vrai
+            // module en cours → en tout dernier choix seulement.
+            const hdr = headers.filter(h =>
+                h.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING).pop();
+            if (hdr) {
+                const m = (hdr.innerText || '').match(/(\d+)\s*\/\s*(\d+)\s*activit/i);
+                if (m && +m[1] >= +m[2]) dist += 1e6;
+            }
             cands.push([dist, b.closest('.cursor-pointer') || b]);
         }
         cands.sort((x, y) => x[0] - y[0]);
