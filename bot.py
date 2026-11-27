@@ -67,7 +67,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.27.5"
+BOT_VERSION = "2026.11.27.6"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -11858,8 +11858,53 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                 time.sleep(3)
                 return True
             if time.time() - t0 >= wait:
+                # Toujours rien : on déroule les modules repliés (chevron
+                # « ⌄ ») un par un pour trouver un « Continue » ailleurs.
+                if wait and self._expand_modules_for_continue():
+                    return True
                 return False
             time.sleep(1)
+
+    _JS_MODULE_CHEVRONS = r"""
+        // Chevrons « ⌄ » des modules repliés (path qui commence par
+        // « M5.83 9.03 », classe transition-transform), non tournés.
+        const out = [];
+        for (const svg of document.querySelectorAll('svg.transition-transform')) {
+            const p = svg.querySelector('path');
+            const d = (p && p.getAttribute('d')) || '';
+            if (!d.startsWith('M5.83 9.03')) continue;
+            const tr = getComputedStyle(svg).transform;
+            if (tr && tr !== 'none' && /rotate|matrix\(-1/.test(tr)) continue;
+            const c = svg.closest('button, [role=button], summary, a') ||
+                      svg.parentElement;
+            const r = c.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0 && !out.includes(c)) out.push(c);
+        }
+        return out;
+    """
+
+    def _expand_modules_for_continue(self) -> bool:
+        """Déroule chaque module replié et cherche le « Continue » blanc
+        du panneau violet après chaque dépliage."""
+        try:
+            chevs = self.driver.execute_script(self._JS_MODULE_CHEVRONS) or []
+        except WebDriverException:
+            return False
+        if not chevs:
+            return False
+        print(f"   🔽 « Continue » introuvable → je déroule les modules "
+              f"({len(chevs)})")
+        for c in chevs[:12]:
+            try:
+                self.driver.execute_script(
+                    "arguments[0].scrollIntoView({block:'center'});"
+                    "arguments[0].click();", c)
+            except WebDriverException:
+                continue
+            time.sleep(1.2)
+            if self._click_path_continue(wait=0):
+                return True
+        return False
 
     def _pass_dashboard(self) -> bool:
         # ── GARDE-FOU GLOBAL : on ne traite le dashboard QUE si la
