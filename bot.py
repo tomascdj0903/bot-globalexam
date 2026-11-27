@@ -67,7 +67,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.27.4"
+BOT_VERSION = "2026.11.27.5"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -11816,9 +11816,13 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
     _JS_PATH_CONTINUE = r"""
         // Bouton « Continue » du panneau violet (parcours) :
         // <button class="… rounded-full … bg-white text-primary-800 …">Continue <svg/></button>
+        // Pas de test « dans l'écran » : le bouton est souvent SOUS la
+        // ligne de flottaison du panneau (avant : jamais trouvé → le bot
+        // cliquait l'image du badge à la place).
         const vis = e => { const r = e.getBoundingClientRect();
-            return r.width > 0 && r.height > 0 && r.bottom > 0 &&
-                   r.top < innerHeight; };
+            const st = getComputedStyle(e);
+            return r.width > 0 && r.height > 0 &&
+                   st.visibility !== 'hidden' && st.display !== 'none'; };
         for (const b of document.querySelectorAll('button, a')) {
             const t = (b.innerText || '').trim().toLowerCase();
             if (!/^(continue|continuer)$/.test(t) || !vis(b) || b.disabled)
@@ -11845,6 +11849,9 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                       "→ clic")
                 self._clear_lesson_texts("nouvelle activité (parcours)")
                 try:
+                    self.driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center'});", el)
+                    time.sleep(0.4)
                     self.driver.execute_script("arguments[0].click();", el)
                 except WebDriverException:
                     self._ghost_click(el)
@@ -11885,6 +11892,9 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
         )
 
         def _click_play_badge() -> bool:
+            # Le badge ouvre le panneau violet : son « Continue » d'abord
+            if self._click_path_continue(wait=0):
+                return True
             try:
                 for badge in self.driver.find_elements(By.XPATH, badge_xpath):
                     if safe_is_displayed(badge):
