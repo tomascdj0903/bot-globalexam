@@ -67,7 +67,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.27.1"
+BOT_VERSION = "2026.11.27.2"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -2677,6 +2677,21 @@ class HybridBot:
         urls = [u for u in urls if re.search(r"\.(mp4|mp3|m4a|webm|wav|ogg)(\?|$)",
                                              u, re.I)]
         if not urls:
+            # Lancer « Play » seulement sur une page de QUESTION (réponses
+            # à cocher / glisser / remplir) : pas sur les pages de cours,
+            # d'intro ou de correction (avant : Play sur chaque page avec
+            # un lecteur, ~350 fois par session).
+            pending = False
+            for _ in range(4):           # la question peut finir de charger
+                try:
+                    pending = self._has_pending_exercise()
+                except Exception:  # noqa: BLE001
+                    pending = False
+                if pending:
+                    break
+                time.sleep(0.7)
+            if not pending:
+                return False
             # Lecteur GlobalExam : PAS de balise <video>/<audio> avant le
             # 1er « Play » (rien trouvé pendant des semaines). On lance la
             # lecture 1,5 s, on lit l'adresse chargée, puis on met en pause.
