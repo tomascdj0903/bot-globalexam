@@ -67,7 +67,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================
 # Version du bot (comparée à version.txt sur GitHub pour la mise à jour auto)
-BOT_VERSION = "2026.11.23.3"
+BOT_VERSION = "2026.11.27.1"
 
 # Clé Gemini : fournie par le launcher (« Clé fournie » = cle_fournie.py,
 # fichier PRIVÉ non publié sur GitHub ; ou la clé perso de l'utilisateur).
@@ -2694,6 +2694,23 @@ class HybridBot:
             if not data:
                 failed.add(url)
                 return False
+            import hashlib
+            hkey = "md5:" + hashlib.md5(data).hexdigest()
+            if cache.get(hkey):
+                txt = cache[hkey]
+                cache[url] = txt
+                print("   🎧 Même audio déjà transcrit (autre adresse) → cache")
+        if not txt and len(data) > 500 * 1024 and any(
+                "TRANSCRIPT" in str(e.get("label", "")).upper()
+                for e in (self.lesson_texts or []) if isinstance(e, dict)):
+            # Long dialogue alors que le transcript de la leçon est DÉJÀ en
+            # mémoire (bouton transcript de la page d'intro) : c'est le
+            # même enregistrement → pas de nouvelle transcription (avant :
+            # le même audio, sous une autre adresse, refait à chaque
+            # question = appels et temps perdus).
+            failed.add(url)
+            return False
+        if not txt:
             mime = ("audio/mpeg" if url.lower().split("?")[0].endswith(".mp3")
                     else "audio/mp4" if ".m4a" in url.lower()
                     else "video/webm" if ".webm" in url.lower()
@@ -2708,11 +2725,14 @@ class HybridBot:
                 f"uniquement avec la transcription.",
                 image={"mime_type": mime, "data": data}, temperature=0.0)
             txt = (raw or "").strip()
-            if len(txt) < 40:
+            # Audio très court (débutants : « buonasera », une heure…) :
+            # 1 mot suffit — c'est justement la réponse.
+            if len(txt) < 2 or re.fullmatch(r"[\W_]*", txt):
                 print("   🎧 Transcription vide → ignorée")
                 failed.add(url)
                 return False
             cache[url] = txt
+            cache[hkey] = txt
             try:
                 with open(self._media_cache_path, "w", encoding="utf-8") as f:
                     json.dump(cache, f, ensure_ascii=False)
@@ -7333,7 +7353,20 @@ transcript→{{"type":"transcript","transcript_action":true}}"""
         # page + le stock + les transcripts (déjà dans le prompt) suffisent
         # — la passe 2, qui n'a jamais l'image, le prouve. "always" force.
         p1_image = image
-        if (VISION_MODE == "auto" and not nb_images
+        # Options = noms d'images (« M1-S4-2.jpg ») : la capture est
+        # INDISPENSABLE (avant : l'IA choisissait au hasard un nom de
+        # fichier, 4 erreurs en italien).
+        _img_opts = bool(code_options) and all(
+            re.search(r"\.(jpe?g|png|webp|gif|svg)$", str(o).strip(), re.I)
+            for o in code_options)
+        if _img_opts:
+            prompt += ("\n\nOPTIONS = IMAGES (voir la capture), dans l'ordre "
+                       "d'affichage (gauche→droite, haut→bas) : "
+                       + " ; ".join(f"{i + 1}. {o}" for i, o in
+                                    enumerate(code_options))
+                       + ". Choisis l'image qui correspond (audio transcrit "
+                       "/ consigne) et renvoie son nom de fichier EXACT.")
+        if (VISION_MODE == "auto" and not nb_images and not _img_opts
                 and not self._exercise_has_image()):
             p1_image = None
             print("   👁️  Vision conditionnelle : exo texte → capture NON "
@@ -12179,6 +12212,38 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                 tr: tr};
     """
 
+    def _click_end_of_activity(self) -> bool:
+        """Bouton de fin d'activité visible (« Finish the module »,
+        « Move on to the next… ») → clic immédiat, en un appel JS."""
+        try:
+            el = self.driver.execute_script("""
+                const vis = e => { const r = e.getBoundingClientRect();
+                    const st = getComputedStyle(e);
+                    return r.width > 0 && r.height > 0 &&
+                           st.visibility !== 'hidden' && st.display !== 'none'; };
+                for (const b of document.querySelectorAll(
+                        'button, a, [role=button]')) {
+                    const t = (b.innerText || '').trim().replace(/\\s+/g, ' ');
+                    if (vis(b) && !b.disabled && t.length < 60 &&
+                        /^(finish the module|move on to the next.*)$/i.test(t))
+                        return b;
+                }
+                return null;
+            """)
+        except WebDriverException:
+            return False
+        if el is None:
+            return False
+        try:
+            label = (el.text or "").strip()
+            self.driver.execute_script(
+                "arguments[0].scrollIntoView({block:'center'});"
+                "arguments[0].click();", el)
+            print(f"   🏁 Fin d'activité : clic « {label} »")
+            return True
+        except WebDriverException:
+            return False
+
     def _quick_find_next(self):
         """Bouton Next / Suivant / Continue visible, en UN appel JS
         (_find_element_by_text parcourt tous les éléments : très lent)."""
@@ -13194,6 +13259,17 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
 
                 self._scroll_bottom()
 
+                # --- Fin d'activité : « Finish the module » / « Move on to
+                # the next » AVANT tout (avant : le bot ouvrait d'abord le
+                # transcript et cliquait « Next » sur la page de fin, puis
+                # seulement le bouton de fin → navigation qui déraillait).
+                if self._click_end_of_activity():
+                    self._clear_lesson_texts("fin d'activité")
+                    self._reset_state()
+                    consecutive_none = 0
+                    time.sleep(3)
+                    continue
+
                 # --- Capture déterministe du transcript (PRIORITAIRE) ---
                 # Avant les réflexes / Gemini : si la page d'intro affiche
                 # "View the transcript", on l'ouvre et on mémorise le texte
@@ -13522,6 +13598,15 @@ INTERDIT : omettre un élément, ajouter un élément hors-stock, mettre "skip" 
                         finally:
                             self._no_finish_validation = False
                         time.sleep(1.8)
+
+                        if _nav_plan:
+                            # Plan « Next » déjà cliqué = page suivante :
+                            # pas de recherche du bouton de progression
+                            # (avant : 4 × « Aucun bouton de progression »
+                            # = ~20 s perdues à CHAQUE page de cours).
+                            self._reset_state()
+                            consecutive_none = 0
+                            continue
 
                         # ── CLIC POST-VALIDATION : Finish / Next / Move on ──
                         # Une fois la validation faite, on attend que le
